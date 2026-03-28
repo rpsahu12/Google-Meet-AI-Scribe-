@@ -1,6 +1,8 @@
 firebase-credentials.json
 # Python
 venv/
+
+.venv/
 __pycache__/
 *.pyc
 
