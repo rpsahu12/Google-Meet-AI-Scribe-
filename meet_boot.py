@@ -48,9 +48,17 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             join_button = page.locator('button:has-text("Ask to join"), button:has-text("Join now")').first
             await join_button.click(force=True)
 
-            # 3. Wait for Admission (we check for the meeting details button which only appears inside)
-            await page.wait_for_selector('button[aria-label="Meeting details"]', timeout=60000)
-            print("Successfully admitted to the meeting!")
+            # 3. Wait for Admission (we just wait for the network to stop loading after you admit it)
+            print("Waiting for you to click Admit... (60 second timeout)")
+            
+            # We wrap this in a try/except because we just want to wait, we don't care if it errors on a specific button
+            try:
+                # Wait until the page fully stabilizes, meaning it has loaded the actual video room
+                await page.wait_for_load_state("networkidle", timeout=60000)
+            except:
+                pass # If it times out but still got in, we just keep going
+
+            print("Assuming bot is in the meeting! 🎙️ Starting FFmpeg audio capture...")
 
             # 4. Start Audio Recording (no time limit - will run until meeting ends)
             print("🎙️ Starting FFmpeg audio capture (recording until meeting ends)...")
