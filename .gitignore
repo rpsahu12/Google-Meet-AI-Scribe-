@@ -1,0 +1,14 @@
+firebase-credentials.json
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Audio files
+*.wav
+
+# OS / misc
+.DS_Store
