@@ -129,7 +129,7 @@ function App() {
       console.log('Got ID token for user:', user.uid);
 
       // Step 1: Initiate the job - backend returns immediately with job_id
-      const initResponse = await fetch('http://localhost:8000/deploy-bot', {
+      const initResponse = await fetch('http://16.170.241.207:8000/deploy-bot', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -150,7 +150,7 @@ function App() {
       // Step 2: Poll for status updates
       pollIntervalRef.current = setInterval(async () => {
         try {
-          const statusResponse = await fetch(`http://localhost:8000/job-status/${jobId}`);
+          const statusResponse = await fetch(`http://16.170.241.207:8000/job-status/${jobId}`);
           if (!statusResponse.ok) {
             throw new Error('Failed to fetch job status');
           }

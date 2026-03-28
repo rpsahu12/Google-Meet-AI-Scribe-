@@ -104,8 +104,8 @@ async def process_meeting_task(job_id: str, meet_url: str):
         print(f"[JOB {job_id}] Bot deploying to {meet_url}...")
         jobs_db[job_id]["status"] = "recording"
 
-        # 1. Run the bot (set to 60s for testing)
-        audio_file = await join_meet_and_record(meet_url, record_seconds=60)
+        # 1. Run the bot (stays until meeting ends)
+        audio_file = await join_meet_and_record(meet_url)
 
         if not audio_file:
             jobs_db[job_id]["status"] = "failed"
