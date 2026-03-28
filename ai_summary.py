@@ -38,7 +38,7 @@ def generate_meeting_summary(audio_file_path: str):
 
     print("[AI] Audio ready. Generating summary...")
 
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
 
     # Enhanced prompt for better, more user-friendly summaries
     prompt = """

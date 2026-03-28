@@ -8,11 +8,15 @@ import firebase_admin
 from firebase_admin import credentials, auth
 from meet_boot import join_meet_and_record
 from ai_summary import generate_meeting_summary
+from cloud_storage import upload_to_s3  # Returns Tuple[bool, str]
 
 
-# Initialize Firebase Admin SDK
+# --- FIREBASE SETUP ---
 cred = credentials.Certificate("firebase-credentials.json")
-firebase_admin.initialize_app(cred)
+# Check if Firebase is already initialized to prevent hot-reload crashes
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
+
 
 # Initialize the FastAPI app
 app = FastAPI(title="Google Meet AI Scribe API")
@@ -124,7 +128,16 @@ async def process_meeting_task(job_id: str, meet_url: str):
                 "participants": []
             }
 
-        summary["audioFile"] = audio_file
+        # 4. Upload to S3 (storage happens before marking complete)
+        success, msg = upload_to_s3(
+            job_id=job_id,
+            user_id=jobs_db[job_id]["user_id"],
+            summary_data=summary,
+            audio_file_path=audio_file
+        )
+        if not success:
+            print(f"[JOB {job_id}] S3 upload failed: {msg}")
+            # Don't fail the job - summary is still available locally
 
         jobs_db[job_id]["status"] = "completed"
         jobs_db[job_id]["result"] = summary
