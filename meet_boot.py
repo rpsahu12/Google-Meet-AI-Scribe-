@@ -81,9 +81,11 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
                     'text="The meeting has ended"',
                     'text="You have been disconnected"',
                     'text="Meeting ended by host"',
-                    'button[aria-label="Rejoin"]',
-                    'text="Ask to rejoin"',
-                    'text="Join again"',
+                    'text="Meeting ended"',
+                    'button:has-text("Rejoin")',
+                    'button:has-text("Ask to rejoin")',
+                    'button:has-text("Join again")',
+                    'text="You'll need to rejoin"',
                 ]
 
                 # Check if any meeting end indicator is present
@@ -99,15 +101,19 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
                 # Also check if we've been kicked out (page redirected or meeting UI gone)
                 try:
-                    meeting_active = await page.locator('button[aria-label="Meeting details"]').count() > 0
-                    if not meeting_active:
-                        # Double check with other meeting indicators
-                        video_panel_gone = await page.locator('[data-is-droppable="true"]').count() == 0
-                        if video_panel_gone:
+                    # Check for meeting controls (mic/camera buttons that appear during active meeting)
+                    mic_button = await page.locator('button[aria-label*="mic"], button[aria-label*="camera"]').count()
+                    meeting_details = await page.locator('button[aria-label="Meeting details"]').count()
+
+                    # If no meeting controls AND no meeting details button, meeting likely ended
+                    if mic_button == 0 and meeting_details == 0:
+                        # Double-check by looking for end-of-meeting page structure
+                        title = await page.title()
+                        if "Meeting" in title or "Google Meet" in title:
                             print("Meeting UI no longer present - meeting may have ended")
                             meeting_ended = True
-                except:
-                    print("Page navigation detected - checking if meeting ended...")
+                except Exception as e:
+                    print(f"Page navigation detected - checking if meeting ended: {e}")
                     meeting_ended = True
 
             print("Meeting ended. Stopping recording...")
