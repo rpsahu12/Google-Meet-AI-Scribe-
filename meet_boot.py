@@ -34,12 +34,19 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         try:
             print("Navigating to meeting...")
-            await page.goto(meet_url,timeout=90000, wait_until="domcontentloaded")
+            await page.goto(meet_url, timeout=90000, wait_until="load")
+
+            # Wait for page to be fully interactive
+            await page.wait_for_load_state("domcontentloaded")
+            await asyncio.sleep(2)  # Extra buffer for Google Meet's JS to initialize
 
             # 1. Enter Name
             print("Typing bot name...")
             name_box = page.locator('input[placeholder="Your name"]:visible')
             await name_box.wait_for(state="visible", timeout=45000)
+            await name_box.wait_for(state="stable", timeout=5000)  # Wait for element to be stable
+            await name_box.click()  # Focus first
+            await asyncio.sleep(0.5)
             await name_box.fill(bot_name)
 
             # 2. Ask to Join
@@ -93,7 +100,7 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
                     'button:has-text("Rejoin")',
                     'button:has-text("Ask to rejoin")',
                     'button:has-text("Join again")',
-                    'text="You'll need to rejoin"',
+                    'text="Youll need to rejoin"',
                 ]
 
                 # Check if any meeting end indicator is present
