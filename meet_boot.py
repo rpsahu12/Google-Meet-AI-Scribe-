@@ -29,13 +29,16 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             ]
         )
 
-        # Load saved Google session if available (allows bot to stay logged in)
+        # Optional: Load saved Google session if available (allows bot to stay logged in)
+        # If no session file exists, bot joins as guest (works for most meetings)
         context_options = {
             'permissions': ['camera', 'microphone']
         }
         if os.path.exists("google_session.json"):
             print("Loading saved Google session...")
             context_options['storage_state'] = "google_session.json"
+        else:
+            print("No Google session found - joining as guest (you may need to admit the bot)")
 
         context = await browser.new_context(**context_options)
         page = await context.new_page()
