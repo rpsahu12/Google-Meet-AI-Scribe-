@@ -113,10 +113,43 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         # === STEP 5: Wait for Admission and Start Recording ===
         print("[BOT] ⏳ Waiting to be admitted... Please admit from host account! (120s timeout)")
+
         wait = WebDriverWait(driver, 120)
 
-        # Wait for the "Leave call" button to appear (means we're admitted)
-        wait.until(EC.presence_of_element_located((By.XPATH, "//button[@aria-label='Leave call']")))
+        # First wait for lobby screen to disappear (the "Waiting to be admitted" UI)
+        try:
+            wait.until(EC.invisibility_of_element_located((
+                By.XPATH,
+                "//div[contains(., 'Waiting to be admitted')] | //span[contains(text(), 'asked to join') or contains(text(), 'Waiting for')]"
+            )))
+            print("[BOT] ✅ Lobby screen disappeared")
+        except:
+            pass  # Might have been admitted too fast
+
+        # Wait for actual meeting elements that only appear when truly admitted:
+        # - Meeting title bar with meeting ID
+        # - OR participant tiles (not just the count bar)
+        # - OR the main video grid
+        print("[BOT] ⏳ Waiting for meeting view to load...")
+        try:
+            wait.until(EC.presence_of_element_located((
+                By.XPATH,
+                "//div[contains(@aria-label, 'Meeting details')] | //div[contains(@class, 'meeting-name')] | //div[@data-testid='participant-tile'] | //div[contains(@class, 'video-tile')]"
+            )))
+            print("[BOT] ✅ Meeting view loaded")
+        except TimeoutException:
+            print("[BOT] ⚠️ Meeting view timeout, checking for alternative indicators...")
+            # Fallback: check if we can see the leave button (definitive proof we're in meeting)
+            try:
+                wait.until(EC.presence_of_element_located((
+                    By.XPATH, "//button[@aria-label='Leave call']"
+                )))
+                print("[BOT] ✅ Leave button found - confirmed in meeting")
+            except TimeoutException:
+                print("[BOT] ❌ Could not confirm meeting admission")
+                _save_screenshot(driver, "admission_check")
+                raise Exception("Bot was not admitted to the meeting")
+
         print("[BOT] ✅ Admitted to the meeting!")
 
         # === STEP 6: Start FFmpeg Recording ===
