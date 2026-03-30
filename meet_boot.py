@@ -64,7 +64,25 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
         options.add_argument("--use-fake-ui-for-media-stream")
         options.add_argument("--use-fake-device-for-media-stream")
 
-        driver = uc.Chrome(options=options)
+        # Auto-detect Chrome binary location on EC2/Ubuntu
+        chrome_paths = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/snap/bin/chromium",
+        ]
+        chrome_binary = None
+        for path in chrome_paths:
+            if os.path.exists(path):
+                chrome_binary = path
+                break
+
+        if chrome_binary:
+            print(f"[BOT] Chrome binary found: {chrome_binary}")
+            options.binary_location = chrome_binary
+
+        driver = uc.Chrome(options=options, browser_executable_path=chrome_binary)
         driver.implicitly_wait(5)
         print("[BOT] ✅ Chrome launched")
 
