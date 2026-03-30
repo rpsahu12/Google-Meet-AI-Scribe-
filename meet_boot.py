@@ -2,626 +2,434 @@ import asyncio
 import subprocess
 import os
 import time
-import random
-import re
-from playwright.async_api import async_playwright
-
-# Graceful import — bot will still function without stealth, but may get blocked
-try:
-    from playwright_stealth import stealth_async
-    HAS_STEALTH = True
-except ImportError:
-    HAS_STEALTH = False
-    print("[BOT] ⚠️  playwright-stealth not installed. Run: pip install playwright-stealth")
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 
 # --- CONFIGURATION ---
 DEBUG_DIR = "debug_screenshots"
-BOT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
-
-# Comprehensive anti-detection JavaScript injected into every page
-STEALTH_INIT_SCRIPT = """
-    // 1. Hide webdriver flag
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-
-    // 2. Fake chrome runtime (critical — Google services check this)
-    if (!window.chrome) {
-        window.chrome = {};
-    }
-    window.chrome.runtime = {
-        connect: function() {},
-        sendMessage: function() {},
-        onMessage: { addListener: function() {}, removeListener: function() {} },
-        id: undefined
-    };
-    window.chrome.loadTimes = function() { return {}; };
-    window.chrome.csi = function() { return {}; };
-
-    // 3. Realistic navigator.plugins (Chrome always has these 3)
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => {
-            const makePlugin = (name, filename, desc) => {
-                const p = { name, filename, description: desc, length: 1 };
-                p[0] = { type: 'application/pdf', suffixes: 'pdf', description: '', enabledPlugin: p };
-                return p;
-            };
-            const plugins = [
-                makePlugin('Chrome PDF Plugin', 'internal-pdf-viewer', 'Portable Document Format'),
-                makePlugin('Chrome PDF Viewer', 'mhjfbmdgcfjbbpaeojofohoefgiehjai', ''),
-                makePlugin('Native Client', 'internal-nacl-plugin', '')
-            ];
-            plugins.length = 3;
-            return plugins;
-        }
-    });
-
-    // 4. Realistic languages
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
-
-    // 5. Override permissions.query to avoid detection
-    if (navigator.permissions && navigator.permissions.query) {
-        const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-        navigator.permissions.query = (params) => {
-            if (params.name === 'notifications') {
-                return Promise.resolve({ state: Notification.permission });
-            }
-            return originalQuery(params);
-        };
-    }
-
-    // 6. WebGL vendor/renderer spoofing (consistent with user-agent)
-    const getParam = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        if (parameter === 37445) return 'Intel Inc.';           // UNMASKED_VENDOR_WEBGL
-        if (parameter === 37446) return 'Intel Iris OpenGL Engine'; // UNMASKED_RENDERER_WEBGL
-        return getParam.call(this, parameter);
-    };
-
-    // 7. Spoof hardware concurrency and device memory
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-
-    // 8. Hide automation-specific properties
-    delete navigator.__proto__.webdriver;
-"""
 
 
-# ============================================================
-#  UTILITY HELPERS
-# ============================================================
-
-async def _save_debug_screenshot(page, name):
-    """Save a timestamped screenshot for troubleshooting on EC2."""
+def _save_screenshot(driver, name):
+    """Save a debug screenshot for troubleshooting on EC2."""
     try:
         os.makedirs(DEBUG_DIR, exist_ok=True)
         filepath = os.path.join(DEBUG_DIR, f"{name}.png")
-        await page.screenshot(path=filepath, full_page=True)
-        print(f"[BOT] 📸 Screenshot saved: {filepath}")
+        driver.save_screenshot(filepath)
+        print(f"[BOT] 📸 Screenshot: {filepath}")
     except Exception as e:
         print(f"[BOT] Screenshot failed ({name}): {e}")
 
 
-async def _random_delay(min_s=0.5, max_s=2.0):
-    """Simulate human-like random delay between actions."""
-    delay = random.uniform(min_s, max_s)
-    await asyncio.sleep(delay)
-
-
-async def _dismiss_dialogs(page):
+def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
     """
-    Dismiss any overlay dialogs that might block the join flow.
-    Handles cookie consent, notification banners, sign-in prompts, etc.
+    Synchronous bot function that uses Selenium + undetected-chromedriver.
+    Based on the proven Google-Meet-Bot approach (Selenium + Chrome).
+    Designed for AWS EC2 with Xvfb virtual display.
     """
-    dismiss_patterns = [
-        # Cookie consent
-        'button:has-text("Accept all")',
-        'button:has-text("Accept")',
-        'button:has-text("I agree")',
-        # Google Meet UI dialogs
-        'button:has-text("Got it")',
-        'button:has-text("Dismiss")',
-        'button:has-text("OK")',
-        'button:has-text("Close")',
-        # Guest flow
-        'button:has-text("Continue without signing in")',
-        'button:has-text("Skip")',
-        'button:has-text("Guest")',
-    ]
+    audio_filename = f"meeting_audio_{int(time.time())}.wav"
+    temp_audio_filename = f"meeting_audio_{int(time.time())}_temp.wav"
+    ffmpeg_process = None
+    driver = None
 
-    dismissed_count = 0
-    for pattern in dismiss_patterns:
-        try:
-            btn = page.locator(pattern).first
-            if await btn.is_visible():
-                await btn.click()
-                dismissed_count += 1
-                print(f"[BOT] 🗑️  Dismissed: {pattern}")
-                await _random_delay(0.3, 0.8)
-        except Exception:
-            pass
+    print(f"[BOT] ═══════════════════════════════════════")
+    print(f"[BOT] Starting bot for: {meet_url}")
+    print(f"[BOT] Bot name: {bot_name}")
+    print(f"[BOT] ═══════════════════════════════════════")
 
-    if dismissed_count == 0:
-        print("[BOT] No overlay dialogs found")
-    return dismissed_count
-
-
-async def _disable_camera_and_mic(page):
-    """Turn off camera and microphone in the Meet lobby (Green Room)."""
-
-    # --- Camera ---
-    camera_off = False
-    camera_strategies = [
-        # Strategy 1: aria-label "Turn off camera"
-        'button[aria-label*="Turn off camera"]',
-        # Strategy 2: case-insensitive partial match
-        'button[aria-label*="turn off camera"]',
-        # Strategy 3: data attribute based
-        'button[data-is-muted="false"][aria-label*="camera" i]',
-    ]
-    for selector in camera_strategies:
-        try:
-            btn = page.locator(selector).first
-            await btn.wait_for(state="visible", timeout=2000)
-            await btn.click()
-            camera_off = True
-            print("[BOT] 📷 Camera turned off")
-            await _random_delay(0.3, 0.5)
-            break
-        except Exception:
-            pass
-    if not camera_off:
-        print("[BOT] 📷 Camera already off or toggle not found")
-
-    # --- Microphone ---
-    mic_off = False
-    mic_strategies = [
-        'button[aria-label*="Turn off microphone"]',
-        'button[aria-label*="turn off microphone"]',
-        'button[data-is-muted="false"][aria-label*="microphone" i]',
-    ]
-    for selector in mic_strategies:
-        try:
-            btn = page.locator(selector).first
-            await btn.wait_for(state="visible", timeout=2000)
-            await btn.click()
-            mic_off = True
-            print("[BOT] 🎤 Microphone turned off")
-            await _random_delay(0.3, 0.5)
-            break
-        except Exception:
-            pass
-    if not mic_off:
-        print("[BOT] 🎤 Microphone already off or toggle not found")
-
-
-async def _enter_bot_name(page, bot_name):
-    """
-    Enter the bot's display name in the Meet lobby name field.
-    Uses multiple selector strategies with fallbacks.
-    """
-    name_selectors = [
-        'input[aria-label="Your name"]',
-        'input[placeholder="Your name"]',
-        'input[type="text"][jsname="YPqjbf"]',
-    ]
-
-    for selector in name_selectors:
-        try:
-            name_input = page.locator(selector).first
-            await name_input.wait_for(state="visible", timeout=3000)
-            await name_input.clear()
-
-            # Type with human-like per-character delay
-            for char in bot_name:
-                await name_input.type(char, delay=random.randint(30, 80))
-
-            print(f"[BOT] ✏️  Entered name: {bot_name}")
-            return True
-        except Exception:
-            pass
-
-    print("[BOT] ℹ️  No name input found (bot may already be logged in)")
-    return False
-
-
-async def _click_join_button(page):
-    """
-    Click the 'Ask to join' or 'Join now' button.
-    Uses 4 strategies in priority order for maximum resilience.
-    """
-
-    # Strategy 1: Accessibility role with regex (most resilient to UI changes)
     try:
-        join_btn = page.get_by_role(
-            "button",
-            name=re.compile(r"ask to join|join now", re.IGNORECASE)
+        # === STEP 1: Launch Chrome with undetected-chromedriver ===
+        print("[BOT] Step 1: Launching Chrome...")
+
+        options = uc.ChromeOptions()
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--start-maximized")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+
+        # Auto-grant camera/mic permissions (critical for Google Meet)
+        options.add_experimental_option("prefs", {
+            "profile.default_content_setting_values.media_stream_mic": 1,
+            "profile.default_content_setting_values.media_stream_camera": 1,
+            "profile.default_content_setting_values.geolocation": 0,
+            "profile.default_content_setting_values.notifications": 1,
+        })
+
+        # Use fake media streams (no real camera/mic needed on EC2)
+        options.add_argument("--use-fake-ui-for-media-stream")
+        options.add_argument("--use-fake-device-for-media-stream")
+
+        driver = uc.Chrome(options=options)
+        driver.implicitly_wait(5)
+        print("[BOT] ✅ Chrome launched")
+
+        # === STEP 2: Navigate to Google Meet ===
+        print("[BOT] Step 2: Navigating to meeting...")
+        driver.get(meet_url)
+        time.sleep(3)
+
+        current_url = driver.current_url
+        print(f"[BOT] Page loaded — URL: {current_url}")
+        _save_screenshot(driver, "01_page_loaded")
+
+        # Check for redirect (invalid link)
+        if "meet.google.com" not in current_url:
+            raise Exception(f"Redirected away from Meet → {current_url}")
+
+        # === STEP 3: Dismiss any dialogs / overlays ===
+        print("[BOT] Step 3: Handling dialogs...")
+        _dismiss_dialogs(driver)
+
+        # === STEP 4: Enter bot name (guest flow) ===
+        print("[BOT] Step 4: Entering bot name...")
+        _enter_name(driver, bot_name)
+        time.sleep(1)
+
+        # === STEP 5: Turn off mic and camera ===
+        print("[BOT] Step 5: Turning off mic and camera...")
+        _turn_off_mic_cam(driver)
+        _save_screenshot(driver, "02_before_join")
+
+        # === STEP 6: Click "Ask to Join" ===
+        print("[BOT] Step 6: Clicking 'Ask to Join'...")
+        time.sleep(2)
+        _click_join(driver)
+        _save_screenshot(driver, "03_join_clicked")
+
+        # === STEP 7: Wait for admission ===
+        print("[BOT] Step 7: Waiting to be admitted (120s timeout)...")
+        print("[BOT] ⏳ Please admit the bot from the host account!")
+        _wait_for_admission(driver, timeout=120)
+        print("[BOT] ✅ Admitted to the meeting!")
+        _save_screenshot(driver, "04_in_meeting")
+
+        # === STEP 8: Start audio recording ===
+        print("[BOT] 🎙️ Starting FFmpeg audio capture...")
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-f", "pulse",
+            "-i", "default",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            temp_audio_filename,
+            "-y",
+        ]
+        ffmpeg_process = subprocess.Popen(
+            ffmpeg_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        await join_btn.wait_for(state="visible", timeout=5000)
-        await join_btn.hover()
-        await _random_delay(0.5, 1.0)
-        await join_btn.click()
-        print("[BOT] ✅ Clicked join button (strategy 1: get_by_role)")
-        return True
-    except Exception:
-        pass
 
-    # Strategy 2: aria-label attribute
-    try:
-        join_btn = page.locator(
-            'button[aria-label*="Ask to join"], '
-            'button[aria-label*="Join now"], '
-            'button[aria-label*="ask to join"], '
-            'button[aria-label*="join now"]'
-        ).first
-        await join_btn.wait_for(state="visible", timeout=3000)
-        await join_btn.hover()
-        await _random_delay(0.5, 1.0)
-        await join_btn.click()
-        print("[BOT] ✅ Clicked join button (strategy 2: aria-label)")
-        return True
-    except Exception:
-        pass
+        # === STEP 9: Monitor meeting until it ends ===
+        print("[BOT] 📍 Monitoring meeting — recording until it ends...")
+        _wait_for_meeting_end(driver)
+        print("[BOT] Meeting ended. Stopping recording...")
 
-    # Strategy 3: Text content matching
-    try:
-        join_btn = page.locator(
-            'button:has-text("Ask to join"), button:has-text("Join now")'
-        ).first
-        await join_btn.wait_for(state="visible", timeout=3000)
-        await join_btn.hover()
-        await _random_delay(0.5, 1.0)
-        await join_btn.click()
-        print("[BOT] ✅ Clicked join button (strategy 3: has-text)")
-        return True
-    except Exception:
-        pass
+        # Stop FFmpeg
+        if ffmpeg_process:
+            ffmpeg_process.terminate()
+            ffmpeg_process.wait()
 
-    # Strategy 4: Enumerate all buttons and match by text content
-    try:
-        buttons = await page.locator("button").all()
-        for btn in buttons:
+        # Finalize audio file
+        if os.path.exists(temp_audio_filename):
+            os.rename(temp_audio_filename, audio_filename)
+            print(f"[BOT] ✅ Audio saved to {audio_filename}")
+            return audio_filename
+        else:
+            print("[BOT] ❌ Failed to save audio file")
+            return None
+
+    except Exception as e:
+        print(f"[BOT] ❌ Fatal error: {e}")
+        if driver:
+            _save_screenshot(driver, "error_final")
+        # Salvage partial audio
+        if os.path.exists(temp_audio_filename):
+            os.rename(temp_audio_filename, audio_filename)
+            print(f"[BOT] ⚠️ Partial audio saved to {audio_filename}")
+        return None
+
+    finally:
+        # Cleanup FFmpeg
+        if ffmpeg_process and ffmpeg_process.poll() is None:
+            ffmpeg_process.terminate()
             try:
-                text = (await btn.text_content() or "").strip().lower()
-                if "ask to join" in text or "join now" in text:
-                    if await btn.is_visible():
-                        await btn.hover()
-                        await _random_delay(0.5, 1.0)
-                        await btn.click()
-                        print(f"[BOT] ✅ Clicked join button (strategy 4: iteration, text='{text}')")
-                        return True
-            except Exception:
-                continue
-    except Exception:
-        pass
+                ffmpeg_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                ffmpeg_process.kill()
 
-    print("[BOT] ❌ Could not find the join button with any strategy")
-    return False
+        # Cleanup browser
+        if driver:
+            try:
+                driver.quit()
+                print("[BOT] Browser closed")
+            except Exception:
+                pass
 
 
 # ============================================================
-#  MAIN BOT FUNCTION
+#  HELPER FUNCTIONS
+# ============================================================
+
+def _dismiss_dialogs(driver):
+    """Dismiss cookie consent, 'Got it', and other overlay dialogs."""
+    dismiss_texts = [
+        "Got it", "Dismiss", "Accept all", "Accept",
+        "Continue without signing in", "Skip", "OK", "Close",
+    ]
+    for text in dismiss_texts:
+        try:
+            buttons = driver.find_elements(By.XPATH, f'//button[contains(text(), "{text}")]')
+            for btn in buttons:
+                if btn.is_displayed():
+                    btn.click()
+                    print(f"[BOT] 🗑️ Dismissed: {text}")
+                    time.sleep(0.5)
+        except Exception:
+            pass
+
+
+def _enter_name(driver, bot_name):
+    """Enter the bot name in the guest name field."""
+    name_selectors = [
+        (By.CSS_SELECTOR, 'input[aria-label="Your name"]'),
+        (By.CSS_SELECTOR, 'input[placeholder="Your name"]'),
+        (By.CSS_SELECTOR, 'input[type="text"][jsname="YPqjbf"]'),
+    ]
+
+    for by, selector in name_selectors:
+        try:
+            name_input = driver.find_element(by, selector)
+            if name_input.is_displayed():
+                name_input.clear()
+                name_input.send_keys(bot_name)
+                print(f"[BOT] ✏️ Name entered: {bot_name}")
+                return True
+        except (NoSuchElementException, Exception):
+            pass
+
+    print("[BOT] ℹ️ No name input found (may already be logged in)")
+    return False
+
+
+def _turn_off_mic_cam(driver):
+    """Turn off microphone and camera in the Meet lobby."""
+
+    # --- Mic toggle ---
+    mic_selectors = [
+        # Reference repo's selector (jscontroller-based)
+        (By.CSS_SELECTOR, 'div[jscontroller="t2mBxb"][data-anchor-id="hw0c9"]'),
+        # aria-label based
+        (By.CSS_SELECTOR, 'button[aria-label*="Turn off microphone"]'),
+        (By.CSS_SELECTOR, '[aria-label*="Turn off microphone"]'),
+        (By.CSS_SELECTOR, 'button[data-is-muted="false"][aria-label*="microphone" i]'),
+    ]
+
+    for by, selector in mic_selectors:
+        try:
+            el = driver.find_element(by, selector)
+            if el.is_displayed():
+                el.click()
+                print("[BOT] 🎤 Microphone turned off")
+                time.sleep(0.5)
+                break
+        except (NoSuchElementException, Exception):
+            pass
+
+    # --- Camera toggle ---
+    cam_selectors = [
+        # Reference repo's selector
+        (By.CSS_SELECTOR, 'div[jscontroller="bwqwSd"][data-anchor-id="psRWwc"]'),
+        # aria-label based
+        (By.CSS_SELECTOR, 'button[aria-label*="Turn off camera"]'),
+        (By.CSS_SELECTOR, '[aria-label*="Turn off camera"]'),
+        (By.CSS_SELECTOR, 'button[data-is-muted="false"][aria-label*="camera" i]'),
+    ]
+
+    for by, selector in cam_selectors:
+        try:
+            el = driver.find_element(by, selector)
+            if el.is_displayed():
+                el.click()
+                print("[BOT] 📷 Camera turned off")
+                time.sleep(0.5)
+                break
+        except (NoSuchElementException, Exception):
+            pass
+
+
+def _click_join(driver):
+    """Click the 'Ask to Join' or 'Join now' button. Multiple strategies with retry."""
+
+    join_selectors = [
+        # Strategy 1: The exact jsname selector from the reference repo (proven to work)
+        (By.CSS_SELECTOR, 'button[jsname="Qx7uuf"]'),
+        # Strategy 2: aria-label based
+        (By.CSS_SELECTOR, 'button[aria-label*="Ask to join"]'),
+        (By.CSS_SELECTOR, 'button[aria-label*="Join now"]'),
+        # Strategy 3: Text-based via XPath
+        (By.XPATH, '//button[contains(text(), "Ask to join")]'),
+        (By.XPATH, '//button[contains(text(), "Join now")]'),
+        # Strategy 4: Span inside button (Google often wraps text in spans)
+        (By.XPATH, '//button[.//span[contains(text(), "Ask to join")]]'),
+        (By.XPATH, '//button[.//span[contains(text(), "Join now")]]'),
+    ]
+
+    for attempt in range(3):
+        for by, selector in join_selectors:
+            try:
+                btn = driver.find_element(by, selector)
+                if btn.is_displayed() and btn.is_enabled():
+                    btn.click()
+                    print(f"[BOT] ✅ Clicked join button: {selector}")
+                    return True
+            except (NoSuchElementException, Exception):
+                pass
+
+        if attempt < 2:
+            print(f"[BOT] Join attempt {attempt + 1} failed, retrying in 3s...")
+            _save_screenshot(driver, f"join_attempt_{attempt + 1}_failed")
+            _dismiss_dialogs(driver)
+            time.sleep(3)
+
+    # Final fallback: JavaScript click on any visible join-like button
+    try:
+        result = driver.execute_script("""
+            const buttons = Array.from(document.querySelectorAll('button'));
+            for (const btn of buttons) {
+                const text = (btn.textContent || '').toLowerCase().trim();
+                if ((text.includes('ask to join') || text.includes('join now')) && btn.offsetParent !== null) {
+                    btn.click();
+                    return text;
+                }
+            }
+            return null;
+        """)
+        if result:
+            print(f"[BOT] ✅ Clicked join button via JS fallback: '{result}'")
+            return True
+    except Exception:
+        pass
+
+    _save_screenshot(driver, "join_FAILED_final")
+    raise Exception("Failed to click 'Ask to join' after all attempts")
+
+
+def _wait_for_admission(driver, timeout=120):
+    """Wait until the bot is admitted into the meeting."""
+    try:
+        # Wait for any element that only exists inside an active meeting
+        WebDriverWait(driver, timeout).until(
+            lambda d: _is_in_meeting(d)
+        )
+    except TimeoutException:
+        _save_screenshot(driver, "admission_timeout")
+        raise Exception(f"Bot was not admitted within {timeout} seconds")
+
+
+def _is_in_meeting(driver):
+    """Check if the bot is inside an active meeting (past the lobby)."""
+    # Look for elements that only appear once you're IN the meeting
+    meeting_indicators = [
+        'button[aria-label*="Leave call"]',
+        'button[aria-label*="Show everyone"]',
+        'button[aria-label*="Turn on microphone"]',
+        'button[aria-label*="Turn off microphone"]',
+        '[data-call-ended="false"]',
+        'button[aria-label*="Present now"]',
+    ]
+
+    for selector in meeting_indicators:
+        try:
+            elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            for el in elements:
+                if el.is_displayed():
+                    return True
+        except Exception:
+            pass
+
+    # Also check via JavaScript
+    try:
+        result = driver.execute_script("""
+            const buttons = Array.from(document.querySelectorAll('button'));
+            return buttons.some(b => {
+                const label = (b.getAttribute('aria-label') || '').toLowerCase();
+                return label.includes('leave call') || label.includes('show everyone');
+            });
+        """)
+        return bool(result)
+    except Exception:
+        return False
+
+
+def _wait_for_meeting_end(driver):
+    """Monitor the meeting and wait until it ends."""
+    while True:
+        time.sleep(5)
+
+        # Check for meeting-ended indicators
+        end_indicators = [
+            '//div[contains(text(), "The meeting has ended")]',
+            '//div[contains(text(), "You have been disconnected")]',
+            '//div[contains(text(), "Meeting ended")]',
+            '//button[contains(text(), "Rejoin")]',
+            '//button[contains(text(), "Return to home screen")]',
+        ]
+
+        for xpath in end_indicators:
+            try:
+                elements = driver.find_elements(By.XPATH, xpath)
+                for el in elements:
+                    if el.is_displayed():
+                        print(f"[BOT] 🔔 Meeting ended: {xpath}")
+                        return
+            except Exception:
+                pass
+
+        # Fallback: check if meeting controls disappeared
+        try:
+            leave_buttons = driver.find_elements(By.CSS_SELECTOR, 'button[aria-label*="Leave call"]')
+            mic_buttons = driver.find_elements(By.CSS_SELECTOR, 'button[aria-label*="microphone"]')
+            visible_controls = any(
+                el.is_displayed() for el in leave_buttons + mic_buttons
+            )
+            if not visible_controls:
+                # Double-check - maybe we got disconnected
+                time.sleep(3)
+                leave_buttons2 = driver.find_elements(By.CSS_SELECTOR, 'button[aria-label*="Leave call"]')
+                if not any(el.is_displayed() for el in leave_buttons2):
+                    print("[BOT] 🔔 Meeting controls gone — meeting likely ended")
+                    return
+        except Exception as e:
+            print(f"[BOT] Page error — assuming meeting ended: {e}")
+            return
+
+
+# ============================================================
+#  ASYNC WRAPPER (for compatibility with FastAPI's async app.py)
 # ============================================================
 
 async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
     """
-    Automates joining a Google Meet and records the raw audio using PulseAudio.
-    Uses stealth techniques to avoid bot detection by Google.
-    Stays in the meeting until it ends (host ends or everyone leaves).
-    Returns the path to the saved audio file, or None on failure.
+    Async wrapper around the synchronous Selenium bot.
+    Runs the blocking Selenium code in a thread pool so FastAPI stays responsive.
     """
-    audio_filename = f"meeting_audio_{int(time.time())}.wav"
-    temp_audio_filename = f"meeting_audio_{int(time.time())}_temp.wav"
-    process = None  # FFmpeg process reference
-
-    print(f"[BOT] ═══════════════════════════════════════════")
-    print(f"[BOT] Starting bot for: {meet_url}")
-    print(f"[BOT] Bot name: {bot_name}")
-    print(f"[BOT] Stealth available: {HAS_STEALTH}")
-    print(f"[BOT] ═══════════════════════════════════════════")
-
-    async with async_playwright() as p:
-        # --- Launch browser with anti-detection args ---
-        browser = await p.chromium.launch(
-            headless=False,
-            args=[
-                # Media stream handling
-                "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
-                "--disable-features=AudioServiceOutOfProcess",
-
-                # Anti-detection
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-                "--disable-features=ImprovedCookieControls",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-extensions",
-                "--disable-component-update",
-                "--disable-features=TranslateUI",
-                "--no-service-autorun",
-                "--password-store=basic",
-
-                # EC2 / Virtual display stability
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--window-size=1920,1080",
-                "--disable-features=VizDisplayCompositor",
-            ]
-        )
-
-        # --- Create browser context ---
-        context_options = {
-            "permissions": ["camera", "microphone"],
-            "user_agent": BOT_USER_AGENT,
-            "viewport": {"width": 1920, "height": 1080},
-        }
-
-        # Reuse saved session if available (logged-in Google account)
-        if os.path.exists("google_session.json"):
-            print("[BOT] 🔑 Loading saved Google session...")
-            context_options["storage_state"] = "google_session.json"
-        else:
-            print("[BOT] 👤 No saved session — joining as guest")
-
-        context = await browser.new_context(**context_options)
-        page = await context.new_page()
-
-        # --- Apply stealth ---
-        if HAS_STEALTH:
-            await stealth_async(page)
-            print("[BOT] 🛡️  Stealth patches applied")
-
-        # Inject additional anti-detection scripts
-        await page.add_init_script(STEALTH_INIT_SCRIPT)
-        print("[BOT] 🛡️  Anti-detection scripts injected")
-
-        try:
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 1: Navigate to Google Meet          ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] Step 1: Navigating to meeting...")
-            await page.goto(meet_url, timeout=90000, wait_until="domcontentloaded")
-
-            # Wait for network to settle
-            try:
-                await page.wait_for_load_state("networkidle", timeout=30000)
-            except Exception:
-                print("[BOT] Network idle timeout — continuing")
-
-            current_url = page.url
-            print(f"[BOT] Page loaded — URL: {current_url}")
-            await _save_debug_screenshot(page, "01_page_loaded")
-
-            # Validate we're still on Google Meet
-            if "workspace.google.com" in current_url or "meet.google.com" not in current_url:
-                raise Exception(f"Redirected away from Meet → {current_url}")
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 2: Dismiss overlay dialogs          ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] Step 2: Checking for overlay dialogs...")
-            await asyncio.sleep(3)  # Let the page render overlays/popups
-            await _dismiss_dialogs(page)
-            await _save_debug_screenshot(page, "02_dialogs_handled")
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 3: Wait for lobby UI                ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] Step 3: Waiting for lobby UI to appear...")
-            lobby_selectors = (
-                'input[aria-label="Your name"], '
-                'input[placeholder="Your name"], '
-                'button:has-text("Ask to join"), '
-                'button:has-text("Join now"), '
-                'div[data-is-meet-lobby="true"]'
-            )
-            try:
-                await page.wait_for_selector(lobby_selectors, timeout=20000)
-                print("[BOT] Lobby UI detected")
-            except Exception:
-                print("[BOT] ⚠️  Lobby selector timeout — trying to proceed anyway")
-                await _save_debug_screenshot(page, "03_lobby_timeout")
-                # Try dismissing dialogs one more time
-                await _dismiss_dialogs(page)
-
-            await _random_delay(1.0, 2.0)
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 4: Enter bot name                   ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] Step 4: Entering bot name...")
-            await _enter_bot_name(page, bot_name)
-            await _random_delay(0.5, 1.0)
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 5: Disable camera & microphone      ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] Step 5: Disabling camera and microphone...")
-            await _disable_camera_and_mic(page)
-            await _save_debug_screenshot(page, "04_before_join")
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 6: Click "Ask to Join" / "Join Now" ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] Step 6: Looking for join button...")
-            await _random_delay(1.0, 2.0)
-
-            join_success = False
-            for attempt in range(3):
-                print(f"[BOT] Join attempt {attempt + 1}/3...")
-                join_success = await _click_join_button(page)
-                if join_success:
-                    break
-
-                # Between retries: dismiss any new dialogs and wait
-                await _dismiss_dialogs(page)
-                await _save_debug_screenshot(page, f"05_join_attempt_{attempt + 1}_failed")
-                await asyncio.sleep(3)
-
-            if not join_success:
-                await _save_debug_screenshot(page, "05_join_FAILED_final")
-                # Dump page HTML for remote debugging
-                try:
-                    html_content = await page.content()
-                    os.makedirs(DEBUG_DIR, exist_ok=True)
-                    dump_path = os.path.join(DEBUG_DIR, "page_dump.html")
-                    with open(dump_path, "w", encoding="utf-8") as f:
-                        f.write(html_content)
-                    print(f"[BOT] 📄 Page HTML dumped to {dump_path}")
-                except Exception:
-                    pass
-                raise Exception("Failed to click 'Ask to join' after 3 attempts")
-
-            await _save_debug_screenshot(page, "06_join_clicked")
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 7: Wait for host to admit the bot   ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] Step 7: Waiting to be admitted (120s timeout)...")
-            print("[BOT] ⏳ Please admit the bot from the host account!")
-
-            try:
-                await page.wait_for_function(
-                    """
-                    () => {
-                        const buttons = Array.from(document.querySelectorAll('button'));
-                        return buttons.some(b => {
-                            const label = (b.getAttribute('aria-label') || '').toLowerCase();
-                            const text = (b.textContent || '').toLowerCase();
-                            return label.includes('leave call') ||
-                                   label.includes('show everyone') ||
-                                   label.includes('turn on microphone') ||
-                                   label.includes('turn off microphone') ||
-                                   text.includes('present now');
-                        });
-                    }
-                    """,
-                    timeout=120000,
-                )
-                print("[BOT] ✅ Successfully admitted to the meeting!")
-            except Exception as e:
-                await _save_debug_screenshot(page, "07_admission_timeout")
-                print(f"[BOT] ❌ Not admitted within 120 seconds: {e}")
-                return None
-
-            await _save_debug_screenshot(page, "08_in_meeting")
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 8: Start audio recording (FFmpeg)   ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] 🎙️  Starting FFmpeg audio capture (recording until meeting ends)...")
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-f", "pulse",           # Input: PulseAudio
-                "-i", "default",         # Source: default audio sink
-                "-acodec", "pcm_s16le",  # WAV format
-                "-ar", "16000",          # 16kHz (optimal for speech-to-text)
-                "-ac", "1",              # Mono
-                temp_audio_filename,
-                "-y",                    # Overwrite if exists
-            ]
-            process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-            # ╔═══════════════════════════════════════════╗
-            # ║  STEP 9: Monitor meeting until it ends    ║
-            # ╚═══════════════════════════════════════════╝
-            print("[BOT] 📍 Monitoring meeting — recording until it ends...")
-            meeting_ended = False
-
-            while not meeting_ended:
-                await asyncio.sleep(5)  # Check every 5 seconds
-
-                # Check for meeting-ended text/buttons
-                meeting_end_indicators = [
-                    'text="The meeting has ended"',
-                    'text="You have been disconnected"',
-                    'text="Meeting ended by host"',
-                    'text="Meeting ended"',
-                    'button:has-text("Rejoin")',
-                    'button:has-text("Ask to rejoin")',
-                    'button:has-text("Join again")',
-                    "text=\"You'll need to rejoin\"",
-                ]
-
-                for indicator in meeting_end_indicators:
-                    try:
-                        element = page.locator(indicator)
-                        if await element.count() > 0:
-                            print(f"[BOT] 🔔 Meeting end detected: {indicator}")
-                            meeting_ended = True
-                            break
-                    except Exception:
-                        pass
-
-                # Fallback: check if meeting controls have disappeared
-                if not meeting_ended:
-                    try:
-                        mic_count = await page.locator(
-                            'button[aria-label*="mic"], button[aria-label*="camera"]'
-                        ).count()
-                        details_count = await page.locator(
-                            'button[aria-label="Meeting details"]'
-                        ).count()
-
-                        if mic_count == 0 and details_count == 0:
-                            title = await page.title()
-                            if "Meet" in title or "Google" in title:
-                                print("[BOT] 🔔 Meeting UI gone — meeting likely ended")
-                                meeting_ended = True
-                    except Exception as e:
-                        print(f"[BOT] Page check error — assuming meeting ended: {e}")
-                        meeting_ended = True
-
-            print("[BOT] Meeting ended. Stopping recording...")
-
-            # Stop FFmpeg gracefully
-            if process:
-                process.terminate()
-                process.wait()
-
-            # Finalize audio file
-            if os.path.exists(temp_audio_filename):
-                os.rename(temp_audio_filename, audio_filename)
-                print(f"[BOT] ✅ Audio saved to {audio_filename}")
-                return audio_filename
-            else:
-                print("[BOT] ❌ Failed to save audio file")
-                return None
-
-        except Exception as e:
-            print(f"[BOT] ❌ Fatal error: {e}")
-            await _save_debug_screenshot(page, "error_final")
-
-            # Salvage temp audio if it exists
-            if os.path.exists(temp_audio_filename):
-                os.rename(temp_audio_filename, audio_filename)
-                print(f"[BOT] ⚠️  Partial audio saved to {audio_filename}")
-
-            return None
-
-        finally:
-            # Ensure FFmpeg is stopped
-            if process and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-
-            print("[BOT] Closing browser...")
-            await browser.close()
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _run_bot_sync, meet_url, bot_name)
+    return result
 
 
 # --- Test Execution ---
 if __name__ == "__main__":
     test_url = input("Paste a Google Meet link to test: ")
-    asyncio.run(join_meet_and_record(test_url))
+    result = _run_bot_sync(test_url)
+    if result:
+        print(f"\n✅ Recording saved: {result}")
+    else:
+        print("\n❌ Bot failed")
