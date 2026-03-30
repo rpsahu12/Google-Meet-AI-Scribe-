@@ -55,7 +55,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             "profile.default_content_setting_values.notifications": 1,
         })
 
-        driver = uc.Chrome(options=options)
+        driver = uc.Chrome(options=options, use_subprocess=True, desired_version=146)
         driver.implicitly_wait(10) # Tell Selenium to wait up to 10 seconds for elements to appear
         print("[BOT] ✅ Chrome launched")
 

@@ -7,5 +7,6 @@ python-dotenv
 firebase-admin
 boto3
 playwright-stealth
-pip install undetected-chromedriver selenium
+undetected-chromedriver
+selenium
 setuptools
