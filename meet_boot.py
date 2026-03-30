@@ -88,9 +88,9 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             # Try multiple selectors for the name input field
             name_box = page.locator('input[placeholder="Your name"], input[aria-label="Your name"], input[type="text"][jsname="YPqjbf"]')
             await name_box.wait_for(state="visible", timeout=45000)
-            await name_box.click(force=True)
-            await asyncio.sleep(0.5)
-            await name_box.fill(bot_name, force=True)
+            # Use fill directly without click - fill handles focus internally
+            await name_box.fill(bot_name)
+            print(f"Filled name: {bot_name}")
 
             # 2. Ask to Join
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
