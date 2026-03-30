@@ -71,9 +71,26 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
             # 1. Enter Name - use force to bypass any overlay
             print("Typing bot name...")
-            name_box = page.locator('input[placeholder="Your name"]')
+
+            # Debug: Check what's on the page
+            try:
+                all_inputs = page.locator('input')
+                count = await all_inputs.count()
+                print(f"Found {count} input fields on page")
+                for i in range(min(count, 5)):
+                    input_el = all_inputs.nth(i)
+                    placeholder = await input_el.get_attribute('placeholder')
+                    aria_label = await input_el.get_attribute('aria-label')
+                    print(f"  Input {i}: placeholder='{placeholder}', aria-label='{aria_label}'")
+            except Exception as e:
+                print(f"Debug info not available: {e}")
+
+            # Try multiple selectors for the name input field
+            name_box = page.locator('input[placeholder="Your name"], input[aria-label="Your name"], input[type="text"][jsname="YPqjbf"]')
             await name_box.wait_for(state="visible", timeout=45000)
-            await name_box.fill(bot_name, force=True)  # force=True bypasses overlay checks
+            await name_box.click(force=True)
+            await asyncio.sleep(0.5)
+            await name_box.fill(bot_name, force=True)
 
             # 2. Ask to Join
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
