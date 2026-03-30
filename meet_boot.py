@@ -123,18 +123,18 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             await asyncio.sleep(8)
             
             print("Locating the visible join button...")
-            # Find the button and ensure we only target the visible one
-            join_button = page.locator('button:has-text("Ask to join"), button:has-text("Join now")').filter(state="visible").first
+            # The exact Python syntax to find ONLY the visible button on the screen:
+            join_button = page.locator('button:has-text("Ask to join"):visible, button:has-text("Join now"):visible').first
             
             print("Simulating human mouse movement...")
-            # THE SECRET FIX: Physically drag the virtual mouse to hover over the button!
+            # Physically drag the virtual mouse to hover over the button
             await join_button.hover()
             
-            # Pause for exactly 1 second while hovering, just like a human reading the button
+            # Pause for exactly 1 second while hovering
             await asyncio.sleep(1)
             
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
-            # Standard, trusted hardware click. NO 'force=True' allowed!
+            # Standard, trusted hardware click
             await join_button.click()
 
             # 3. Wait for Admission
