@@ -6,3 +6,6 @@ google-generativeai
 python-dotenv
 firebase-admin
 boto3
+playwright-stealth
+pip install undetected-chromedriver selenium
+setuptools
