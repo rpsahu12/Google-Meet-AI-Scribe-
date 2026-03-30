@@ -44,9 +44,8 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             print("Typing bot name...")
             name_box = page.locator('input[placeholder="Your name"]:visible')
             await name_box.wait_for(state="visible", timeout=45000)
-            await name_box.wait_for(state="stable", timeout=5000)  # Wait for element to be stable
             await name_box.click()  # Focus first
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
             await name_box.fill(bot_name)
 
             # 2. Ask to Join
