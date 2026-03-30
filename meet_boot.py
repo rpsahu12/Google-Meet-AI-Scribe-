@@ -16,34 +16,52 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
     print(f"Starting bot for URL: {meet_url}")
 
     async with async_playwright() as p:
-        # Launch Chromium.
-        # Note: We keep headless=False for now so you can see it working via X11/Wayland forwarding in WSL.
-        # When deploying to AWS, we will wrap this script in `xvfb-run` to handle the virtual display.
+        # Launch Chromium with anti-detection measures
         browser = await p.chromium.launch(
             headless=False,
             args=[
                 "--use-fake-ui-for-media-stream",
                 "--use-fake-device-for-media-stream",
-                "--disable-features=AudioServiceOutOfProcess", # Forces audio to system pulse/alsa
-                "--disable-blink-features=AutomationControlled"
+                "--disable-features=AudioServiceOutOfProcess",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-features=IsolateOrigins,site-per-process",
+                "--disable-web-security",
+                "--disable-features=ImprovedCookieControls",
+                "--no-first-run",
+                "--no-default-browser-check"
             ]
         )
 
-        # Optional: Load saved Google session if available (allows bot to stay logged in)
-        # If no session file exists, bot joins as guest (works for most meetings)
+        # Use a realistic user agent
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+        # Optional: Load saved Google session if available
         context_options = {
             'permissions': ['camera', 'microphone'],
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            'user_agent': user_agent,
+            'viewport': {'width': 1920, 'height': 1080}
         }
         if os.path.exists("google_session.json"):
             print("Loading saved Google session...")
             context_options['storage_state'] = "google_session.json"
-            print("Note: If sign-in dialog appears, the session may be expired. Run save_google_session.py to refresh.")
         else:
-            print("No Google session found - joining as guest (you may need to admit the bot)")
+            print("No Google session found - joining as guest")
 
         context = await browser.new_context(**context_options)
+
+        # Add extra headers to look like a real browser
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        """)
+
         page = await context.new_page()
+
+        # Inject anti-detection script
+        await page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        """)
 
         try:
             print("Navigating to meeting...")
