@@ -38,6 +38,7 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
         if os.path.exists("google_session.json"):
             print("Loading saved Google session...")
             context_options['storage_state'] = "google_session.json"
+            print("Note: If sign-in dialog appears, the session may be expired. Run save_google_session.py to refresh.")
         else:
             print("No Google session found - joining as guest (you may need to admit the bot)")
 
@@ -46,38 +47,31 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         try:
             print("Navigating to meeting...")
-            # Try with domcontentloaded first (faster), then wait for full load
+            # Navigate and wait for DOM to be ready
             await page.goto(meet_url, timeout=60000, wait_until="domcontentloaded")
 
-            # Wait for page to fully load
-            await page.wait_for_load_state("load", timeout=30000)
-            await asyncio.sleep(2)  # Extra buffer for Google Meet's JS to initialize
+            await asyncio.sleep(3)  # Extra buffer for Google Meet's JS to initialize
 
             print(f"Page loaded successfully. Title: {await page.title()}")
 
-            # 0. Dismiss any sign-in dialog first
+            # 0. Wait for and dismiss any sign-in dialog first
             print("Checking for sign-in prompt...")
-            try:
-                # Look for the sign-in dialog and close it
-                signin_dialog = page.locator('div[role="dialog"][aria-label*="Sign in"]')
-                if await signin_dialog.count() > 0:
-                    # Try clicking outside the dialog to dismiss, or look for close button
-                    close_button = page.locator('button[aria-label="Close"], button[jsname="H2OpDe"]')
-                    if await close_button.count() > 0:
-                        await close_button.click()
-                        await asyncio.sleep(1)
-                        print("Sign-in dialog dismissed")
-                    else:
-                        # Click on body outside dialog to dismiss
-                        await page.click('body', position={'x': 10, 'y': 10})
-                        await asyncio.sleep(1)
-                        print("Attempted to dismiss sign-in dialog")
-            except Exception as e:
-                print(f"No sign-in dialog found or already dismissed: {e}")
+            await asyncio.sleep(3)  # Let Google Meet UI fully render
 
-            # 1. Enter Name
+            # Try to find and click "Skip" or "Continue without signing in" if available
+            try:
+                # Look for "Continue without signing in" or similar
+                skip_button = page.locator('button:has-text("Continue without signing in"), button:has-text("Skip"), button:has-text("Guest")')
+                if await skip_button.count() > 0:
+                    await skip_button.click()
+                    await asyncio.sleep(2)
+                    print("Clicked skip sign-in button")
+            except:
+                pass
+
+            # 1. Enter Name - use force to bypass any overlay
             print("Typing bot name...")
-            name_box = page.locator('input[placeholder="Your name"]:visible')
+            name_box = page.locator('input[placeholder="Your name"]')
             await name_box.wait_for(state="visible", timeout=45000)
             await name_box.fill(bot_name, force=True)  # force=True bypasses overlay checks
 
