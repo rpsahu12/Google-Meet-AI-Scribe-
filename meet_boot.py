@@ -123,19 +123,30 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             await asyncio.sleep(8)
             
             print("Locating the visible join button...")
-            # The exact Python syntax to find ONLY the visible button on the screen:
             join_button = page.locator('button:has-text("Ask to join"):visible, button:has-text("Join now"):visible').first
             
-            print("Simulating human mouse movement...")
-            # Physically drag the virtual mouse to hover over the button
-            await join_button.hover()
+            print("Calculating exact screen coordinates...")
+            # Get the physical pixel location and size of the button
+            box = await join_button.bounding_box()
             
-            # Pause for exactly 1 second while hovering
-            await asyncio.sleep(1)
-            
-            print("Clicking 'Ask to join'. Please admit the bot from your host account!")
-            # Standard, trusted hardware click
-            await join_button.click()
+            if box:
+                # Calculate the exact dead-center of the button
+                target_x = box['x'] + box['width'] / 2
+                target_y = box['y'] + box['height'] / 2
+                
+                print(f"Moving hardware mouse to X:{target_x}, Y:{target_y}...")
+                # The 'steps' parameter makes the mouse glide across the screen like a real human hand
+                await page.mouse.move(target_x, target_y, steps=10)
+                
+                # Pause while hovering
+                await asyncio.sleep(1)
+                
+                print("Clicking 'Ask to join'. Please admit the bot from your host account!")
+                # Fire a raw OS-level mouse click exactly at those coordinates. No DOM shields can block this.
+                await page.mouse.click(target_x, target_y)
+            else:
+                print("Could not find button coordinates! Falling back to force click...")
+                await join_button.click(force=True)
 
             # 3. Wait for Admission
             print("Waiting for you to click Admit... (60 second timeout)")
