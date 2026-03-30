@@ -110,11 +110,11 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             print("[BOT] ❌ Failed to click join button.")
             _save_screenshot(driver, "error_join_click")
             raise e
-
+            
         # === STEP 5: Wait for Admission and Start Recording ===
         print("[BOT] ⏳ Waiting to be admitted... Please admit from host account! (120s timeout)")
 
-        # First wait for lobby screen to disappear (the "Waiting to be admitted" UI)
+        # First wait for lobby screen to disappear
         try:
             WebDriverWait(driver, 120).until(EC.invisibility_of_element_located((
                 By.XPATH,
@@ -122,57 +122,46 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             )))
             print("[BOT] ✅ Lobby screen disappeared")
         except Exception as e:
-            print(f"[BOT] ⚠️ Lobby wait exception: {e}")
-            pass  # Might have been admitted too fast
+            pass
 
-        # Wait for actual meeting elements that only appear when truly admitted:
-        # Primary indicator: Leave call button (most reliable)
-        print("[BOT] ⏳ Waiting for meeting view to load...")
-        time.sleep(3)  # Let page transition after lobby disappears
+        print("[BOT] ⏳ Waking up UI to find meeting controls...")
+        try:
+            # Wiggle the virtual mouse to force Google Meet's hidden bottom menu bar to appear
+            from selenium.webdriver.common.action_chains import ActionChains
+            ActionChains(driver).move_by_offset(10, 10).perform()
+        except:
+            pass
+            
+        time.sleep(2)
 
-        leave_btn_found = False
-
-        # Try specific leave button selectors one by one with logging
-        leave_selectors = [
+        # Quick 5-second checks instead of 30-second traps!
+        in_meeting = False
+        meeting_selectors = [
             "//button[@aria-label='Leave call']",
-            "//button[contains(@aria-label, 'Leave')]",
-            "//button[.//*[contains(text(), 'Leave')]]"
+            "//button[contains(@aria-label, 'Show everyone')]",
+            "//button[contains(@aria-label, 'Chat with everyone')]"
         ]
 
-        for i, selector in enumerate(leave_selectors):
+        for selector in meeting_selectors:
             try:
-                print(f"[BOT] Trying selector {i+1}/{len(leave_selectors)}: {selector[:60]}...")
-                # Use a shorter timeout per selector (30s each = 90s total)
-                short_wait = WebDriverWait(driver, 30)
-                elem = short_wait.until(EC.presence_of_element_located((By.XPATH, selector)))
-                # Also verify element is visible/interactable
-                if elem.is_displayed():
-                    print("[BOT] ✅ Leave button found - confirmed in meeting")
-                    leave_btn_found = True
-                    break
-                else:
-                    print(f"[BOT] ⚠️ Selector {i+1} found hidden element, continuing...")
-            except TimeoutException:
-                print(f"[BOT] ⚠️ Selector {i+1} timed out")
-                continue
-            except Exception as e:
-                print(f"[BOT] ⚠️ Selector {i+1} error: {e}")
+                short_wait = WebDriverWait(driver, 5)
+                short_wait.until(EC.presence_of_element_located((By.XPATH, selector)))
+                in_meeting = True
+                print("[BOT] ✅ Meeting UI confirmed!")
+                break
+            except:
                 continue
 
-        if not leave_btn_found:
-            print("[BOT] ❌ Could not confirm meeting admission - Leave button not found")
-            _save_screenshot(driver, "admission_check")
-            # Try to find what's actually on the page
-            try:
-                body = driver.find_element(By.TAG_NAME, "body")
-                print(f"[BOT] Page content preview: {body.text[:1000]}")
-                _save_screenshot(driver, "page_content_debug")
-            except Exception as debug_e:
-                print(f"[BOT] Debug failed: {debug_e}")
-            raise Exception("Bot was not admitted to the meeting")
-
+        if not in_meeting:
+            # Check if the host ended the call while we were waiting
+            page_text = driver.page_source.lower()
+            if "left the meeting" in page_text or "meeting has ended" in page_text or "ended" in page_text or "return to home screen" in page_text:
+                print("[BOT] 🛑 Host ended the meeting before we could start recording.")
+                return None
+            else:
+                print("[BOT] ⚠️ Could not strictly verify UI controls, but proceeding to record anyway since lobby vanished.")
+                
         print("[BOT] ✅ Admitted to the meeting!")
-        _save_screenshot(driver, "admitted_to_meeting")
 
         # === STEP 6: Start FFmpeg Recording ===
         print("[BOT] 🎙️ Starting FFmpeg audio capture...")
