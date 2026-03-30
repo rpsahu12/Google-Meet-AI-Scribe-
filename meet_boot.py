@@ -32,7 +32,8 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
         # Optional: Load saved Google session if available (allows bot to stay logged in)
         # If no session file exists, bot joins as guest (works for most meetings)
         context_options = {
-            'permissions': ['camera', 'microphone']
+            'permissions': ['camera', 'microphone'],
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         }
         if os.path.exists("google_session.json"):
             print("Loading saved Google session...")
@@ -45,11 +46,14 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         try:
             print("Navigating to meeting...")
-            await page.goto(meet_url, timeout=90000, wait_until="load")
+            # Try with domcontentloaded first (faster), then wait for full load
+            await page.goto(meet_url, timeout=60000, wait_until="domcontentloaded")
 
-            # Wait for page to be fully interactive
-            await page.wait_for_load_state("domcontentloaded")
+            # Wait for page to fully load
+            await page.wait_for_load_state("load", timeout=30000)
             await asyncio.sleep(2)  # Extra buffer for Google Meet's JS to initialize
+
+            print(f"Page loaded successfully. Title: {await page.title()}")
 
             # 0. Dismiss any sign-in dialog first
             print("Checking for sign-in prompt...")
@@ -176,6 +180,12 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         except Exception as e:
             print(f"An error occurred: {e}")
+            # Save screenshot for debugging
+            try:
+                await page.screenshot(path="error_screenshot.png")
+                print("Screenshot saved to error_screenshot.png for debugging")
+            except:
+                pass
             # Clean up temp file on error
             if os.path.exists(temp_audio_filename):
                 os.rename(temp_audio_filename, audio_filename)
