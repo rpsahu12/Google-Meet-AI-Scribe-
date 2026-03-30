@@ -55,7 +55,29 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             "profile.default_content_setting_values.notifications": 1,
         })
 
-        driver = uc.Chrome(options=options, use_subprocess=True, desired_version=146)
+        # --- AUTO-DETECT CHROME VERSION ---
+        chrome_version = None
+        chrome_binary = "/usr/bin/google-chrome" # Standard Ubuntu path
+        
+        if os.path.exists(chrome_binary):
+            try:
+                version_output = subprocess.check_output([chrome_binary, "--version"]).decode('utf-8').strip()
+                # Output like: "Google Chrome 146.0.7680.164"
+                chrome_version = int(version_output.split()[-1].split(".")[0])
+                print(f"[BOT] Auto-detected Chrome version: {chrome_version}")
+            except Exception as e:
+                print(f"[BOT] Failed to detect Chrome version: {e}")
+        else:
+            print(f"[BOT] Chrome binary not found at {chrome_binary}. Letting UC auto-detect.")
+            chrome_binary = None
+
+        driver = uc.Chrome(
+            options=options,
+            use_subprocess=True,
+            browser_executable_path=chrome_binary,
+            version_main=chrome_version
+        )
+        
         driver.implicitly_wait(10) # Tell Selenium to wait up to 10 seconds for elements to appear
         print("[BOT] ✅ Chrome launched")
 
@@ -140,8 +162,6 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             driver.quit()
 
 # === ASYNC WRAPPER FOR FASTAPI ===
-# Because FastAPI uses asyncio, we wrap the synchronous Selenium bot in a thread 
-# so it doesn't freeze your web server while it sits in the meeting!
 async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
     return await asyncio.to_thread(_run_bot_sync, meet_url, bot_name)
 
