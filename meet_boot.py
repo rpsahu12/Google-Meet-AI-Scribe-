@@ -65,14 +65,16 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         try:
             print("Navigating to meeting...")
-            # Navigate and wait for network to be idle (full page load)
-            await page.goto(meet_url, timeout=60000, wait_until="load")
 
-            # Wait for network idle to ensure all dynamic content is loaded
+            # First, try to load with domcontentloaded (faster)
+            await page.goto(meet_url, timeout=90000, wait_until="domcontentloaded")
+
+            # Then wait for network idle with longer timeout
             try:
-                await page.wait_for_load_state("networkidle", timeout=30000)
+                await page.wait_for_load_state("networkidle", timeout=60000)
             except:
-                pass  # Continue even if networkidle times out
+                print("Network idle timeout, but continuing...")
+                pass
 
             current_url = page.url
             print(f"Page loaded successfully. Title: {await page.title()}")
