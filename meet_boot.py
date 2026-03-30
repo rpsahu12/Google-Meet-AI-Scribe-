@@ -29,7 +29,15 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             ]
         )
 
-        context = await browser.new_context(permissions=['camera', 'microphone'])
+        # Load saved Google session if available (allows bot to stay logged in)
+        context_options = {
+            'permissions': ['camera', 'microphone']
+        }
+        if os.path.exists("google_session.json"):
+            print("Loading saved Google session...")
+            context_options['storage_state'] = "google_session.json"
+
+        context = await browser.new_context(**context_options)
         page = await context.new_page()
 
         try:
@@ -40,13 +48,31 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             await page.wait_for_load_state("domcontentloaded")
             await asyncio.sleep(2)  # Extra buffer for Google Meet's JS to initialize
 
+            # 0. Dismiss any sign-in dialog first
+            print("Checking for sign-in prompt...")
+            try:
+                # Look for the sign-in dialog and close it
+                signin_dialog = page.locator('div[role="dialog"][aria-label*="Sign in"]')
+                if await signin_dialog.count() > 0:
+                    # Try clicking outside the dialog to dismiss, or look for close button
+                    close_button = page.locator('button[aria-label="Close"], button[jsname="H2OpDe"]')
+                    if await close_button.count() > 0:
+                        await close_button.click()
+                        await asyncio.sleep(1)
+                        print("Sign-in dialog dismissed")
+                    else:
+                        # Click on body outside dialog to dismiss
+                        await page.click('body', position={'x': 10, 'y': 10})
+                        await asyncio.sleep(1)
+                        print("Attempted to dismiss sign-in dialog")
+            except Exception as e:
+                print(f"No sign-in dialog found or already dismissed: {e}")
+
             # 1. Enter Name
             print("Typing bot name...")
             name_box = page.locator('input[placeholder="Your name"]:visible')
             await name_box.wait_for(state="visible", timeout=45000)
-            await name_box.click()  # Focus first
-            await asyncio.sleep(1)
-            await name_box.fill(bot_name)
+            await name_box.fill(bot_name, force=True)  # force=True bypasses overlay checks
 
             # 2. Ask to Join
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
