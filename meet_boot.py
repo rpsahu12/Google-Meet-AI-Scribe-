@@ -47,16 +47,26 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         try:
             print("Navigating to meeting...")
-            # Navigate and wait for DOM to be ready
-            await page.goto(meet_url, timeout=60000, wait_until="domcontentloaded")
+            # Navigate and wait for network to be idle (full page load)
+            await page.goto(meet_url, timeout=60000, wait_until="load")
 
-            await asyncio.sleep(3)  # Extra buffer for Google Meet's JS to initialize
+            # Wait for network idle to ensure all dynamic content is loaded
+            try:
+                await page.wait_for_load_state("networkidle", timeout=30000)
+            except:
+                pass  # Continue even if networkidle times out
 
             print(f"Page loaded successfully. Title: {await page.title()}")
 
+            # Wait for the main content container to appear
+            print("Waiting for meeting lobby UI...")
+            try:
+                await page.wait_for_selector('div[role="main"], div.TZFSLb, div[data-is-meet-lobby="true"]', timeout=15000)
+            except:
+                pass  # Continue anyway
+
             # 0. Wait for and dismiss any sign-in dialog first
             print("Checking for sign-in prompt...")
-            await asyncio.sleep(3)  # Let Google Meet UI fully render
 
             # Try to find and click "Skip" or "Continue without signing in" if available
             try:
