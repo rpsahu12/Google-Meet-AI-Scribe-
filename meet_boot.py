@@ -120,15 +120,22 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
             # 2. Ask to Join
             print("Waiting for Meet to initialize fake camera/mic...")
-            await asyncio.sleep(8)  # Bumped to 8 seconds to guarantee the button unlocks
+            await asyncio.sleep(8)
             
             print("Locating the visible join button...")
-            # The ':visible' tag is the secret! It forces Playwright to ignore hidden mobile buttons.
-            join_button = page.locator('button:has-text("Ask to join"):visible, button:has-text("Join now"):visible').first
+            # Find the button and ensure we only target the visible one
+            join_button = page.locator('button:has-text("Ask to join"), button:has-text("Join now")').filter(state="visible").first
+            
+            print("Simulating human mouse movement...")
+            # THE SECRET FIX: Physically drag the virtual mouse to hover over the button!
+            await join_button.hover()
+            
+            # Pause for exactly 1 second while hovering, just like a human reading the button
+            await asyncio.sleep(1)
             
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
-            # Use a native, trusted human click. 'force=True' punches through any floating tooltips.
-            await join_button.click(force=True)
+            # Standard, trusted hardware click. NO 'force=True' allowed!
+            await join_button.click()
 
             # 3. Wait for Admission
             print("Waiting for you to click Admit... (60 second timeout)")
