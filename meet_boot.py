@@ -6,7 +6,7 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
 
 # --- CONFIGURATION ---
 DEBUG_DIR = "debug_screenshots"
@@ -25,11 +25,13 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
     """
     # Ensure Xvfb virtual monitor is linked
     os.environ["DISPLAY"] = ":99"
-    
-    audio_filename = f"meeting_audio_{int(time.time())}.wav"
-    temp_audio_filename = f"meeting_audio_{int(time.time())}_temp.wav"
+
+    timestamp = int(time.time())
+    audio_filename = f"meeting_audio_{timestamp}.wav"
+    temp_audio_filename = f"meeting_audio_{timestamp}_temp.wav"
     ffmpeg_process = None
     driver = None
+    is_recording = False
 
     print(f"[BOT] ═══════════════════════════════════════")
     print(f"[BOT] Starting bot for: {meet_url}")
@@ -109,10 +111,11 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             _save_screenshot(driver, "error_join_click")
             raise e
 
-        # === STEP 5: Wait for Admission ===
-        print("[BOT] ⏳ Waiting to be admitted... Please admit from host account! (60s timeout)")
-        wait = WebDriverWait(driver, 60)
-        # We know we are inside when the red "Leave call" button appears
+        # === STEP 5: Wait for Admission and Start Recording ===
+        print("[BOT] ⏳ Waiting to be admitted... Please admit from host account! (120s timeout)")
+        wait = WebDriverWait(driver, 120)
+
+        # Wait for the "Leave call" button to appear (means we're admitted)
         wait.until(EC.presence_of_element_located((By.XPATH, "//button[@aria-label='Leave call']")))
         print("[BOT] ✅ Admitted to the meeting!")
 
@@ -123,19 +126,34 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             "-ar", "16000", "-ac", "1", temp_audio_filename, "-y"
         ]
         ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        is_recording = True
 
-        # === STEP 7: Monitor Meeting Status ===
-        print("[BOT] 📍 Monitoring meeting status. Will record until meeting ends...")
-        meeting_ended = False
-        
-        while not meeting_ended:
-            time.sleep(5) # Check every 5 seconds
+        # === STEP 7: Monitor Meeting - Stop when "Leave call" button disappears ===
+        print("[BOT] 📍 Monitoring meeting status. Recording until meeting ends...")
+
+        while True:
+            time.sleep(2)  # Check every 2 seconds
             try:
-                # If we can still find the Leave Call button, we are still in the meeting
-                driver.find_element(By.XPATH, "//button[@aria-label='Leave call']")
-            except NoSuchElementException:
-                print("[BOT] Meeting UI disappeared! Meeting has ended.")
-                meeting_ended = True
+                # Try to find the Leave call button
+                leave_btn = driver.find_element(By.XPATH, "//button[@aria-label='Leave call']")
+                # Button still exists, continue recording
+                pass
+            except (NoSuchElementException, WebDriverException, Exception) as e:
+                # Button vanished or connection lost - meeting ended
+                print(f"[BOT] 🛑 Leave button disappeared - Meeting ended ({type(e).__name__})")
+                break
+
+        # === STEP 8: Stop Recording ===
+        if ffmpeg_process and is_recording:
+            print("[BOT] 🛑 Stopping FFmpeg recording...")
+            ffmpeg_process.terminate()
+            ffmpeg_process.wait()
+            is_recording = False
+
+            # Rename temp file to final file
+            if os.path.exists(temp_audio_filename):
+                os.rename(temp_audio_filename, audio_filename)
+                print(f"[BOT] ✅ Audio saved to {audio_filename}")
 
         return audio_filename
 
