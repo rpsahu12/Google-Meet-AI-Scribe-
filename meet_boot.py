@@ -105,28 +105,18 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             except:
                 pass
 
-            # 1. Enter Name - use force to bypass any overlay
-            print("Typing bot name...")
-
-            # Debug: Check what's on the page
-            try:
-                all_inputs = page.locator('input')
-                count = await all_inputs.count()
-                print(f"Found {count} input fields on page")
-                for i in range(min(count, 5)):
-                    input_el = all_inputs.nth(i)
-                    placeholder = await input_el.get_attribute('placeholder')
-                    aria_label = await input_el.get_attribute('aria-label')
-                    print(f"  Input {i}: placeholder='{placeholder}', aria-label='{aria_label}'")
-            except Exception as e:
-                print(f"Debug info not available: {e}")
-
-            # Try multiple selectors for the name input field
+            # 1. Enter Name (Conditional based on login status)
+            print("Checking if name input is required...")
             name_box = page.locator('input[placeholder="Your name"], input[aria-label="Your name"], input[type="text"][jsname="YPqjbf"]')
-            await name_box.wait_for(state="visible", timeout=45000)
-            # Use fill directly without click - fill handles focus internally
-            await name_box.fill(bot_name)
-            print(f"Filled name: {bot_name}")
+            
+            try:
+                # Only wait 5 seconds. If we are logged in, this box won't exist!
+                await name_box.wait_for(state="visible", timeout=5000)
+                print("Typing bot name...")
+                await name_box.fill(bot_name)
+                print(f"Filled name: {bot_name}")
+            except:
+                print("No name input required (Bot is already logged in!). Skipping to Join...")
 
             # 2. Ask to Join
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
