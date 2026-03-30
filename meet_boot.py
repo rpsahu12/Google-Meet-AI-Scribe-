@@ -122,7 +122,7 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
             await asyncio.sleep(2)
             join_button = page.locator('button:has-text("Ask to join"), button:has-text("Join now")').first
-            await join_button.click(force=True)
+            await join_button.evaluate("node => node.click()")
 
             # 3. Wait for Admission (we just wait for the network to stop loading after you admit it)
             print("Waiting for you to click Admit... (60 second timeout)")
