@@ -56,7 +56,13 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
             except:
                 pass  # Continue even if networkidle times out
 
+            current_url = page.url
             print(f"Page loaded successfully. Title: {await page.title()}")
+            print(f"Current URL: {current_url}")
+
+            # Check if we got redirected (invalid meeting link)
+            if "workspace.google.com" in current_url or "meet.google.com" not in current_url:
+                raise Exception(f"Invalid or expired meeting link - redirected to {current_url}")
 
             # Wait for the main content container to appear
             print("Waiting for meeting lobby UI...")
