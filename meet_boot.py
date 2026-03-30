@@ -119,10 +119,14 @@ async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot"):
                 print("No name input required (Bot is already logged in!). Skipping to Join...")
 
             # 2. Ask to Join
+            print("Waiting for Meet to initialize fake camera/mic and unlock the button...")
+            await asyncio.sleep(6)  # Give the "Getting ready..." overlay 6 full seconds to finish!
+            
             print("Clicking 'Ask to join'. Please admit the bot from your host account!")
-            await asyncio.sleep(2)
             join_button = page.locator('button:has-text("Ask to join"), button:has-text("Join now")').first
-            await join_button.evaluate("node => node.click()")
+            
+            # Bypass all invisible UI shields and trigger the click internally
+            await join_button.dispatch_event("click")
 
             # 3. Wait for Admission
             print("Waiting for you to click Admit... (60 second timeout)")
