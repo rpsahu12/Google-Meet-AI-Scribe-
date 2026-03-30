@@ -82,7 +82,23 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             print(f"[BOT] Chrome binary found: {chrome_binary}")
             options.binary_location = chrome_binary
 
-        driver = uc.Chrome(options=options, browser_executable_path=chrome_binary)
+        # Auto-detect Chrome version to match ChromeDriver
+        chrome_version = None
+        if chrome_binary:
+            try:
+                import subprocess as sp
+                version_output = sp.check_output([chrome_binary, "--version"]).decode().strip()
+                # Output like: "Google Chrome 146.0.7680.164"
+                chrome_version = int(version_output.split()[-1].split(".")[0])
+                print(f"[BOT] Chrome version detected: {chrome_version}")
+            except Exception:
+                pass
+
+        driver = uc.Chrome(
+            options=options,
+            browser_executable_path=chrome_binary,
+            version_main=chrome_version,
+        )
         driver.implicitly_wait(5)
         print("[BOT] ✅ Chrome launched")
 
