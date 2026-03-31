@@ -115,64 +115,93 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
         print("[BOT] ⏳ Waiting to be admitted... Please admit from host account! (120s timeout)")
 
         # First wait for lobby screen to disappear
+        lobby_xpath = "//div[contains(., 'Waiting to be admitted')] | //span[contains(text(), 'asked to join') or contains(text(), 'Waiting for')]"
         try:
-            WebDriverWait(driver, 120).until(EC.invisibility_of_element_located((
-                By.XPATH,
-                "//div[contains(., 'Waiting to be admitted')] | //span[contains(text(), 'asked to join') or contains(text(), 'Waiting for')]"
-            )))
+            WebDriverWait(driver, 120).until(EC.invisibility_of_element_located((By.XPATH, lobby_xpath)))
             print("[BOT] ✅ Lobby screen disappeared")
         except Exception as e:
             print(f"[BOT] ⚠️ Lobby wait exception: {e}")
 
-        # Small delay to let the page transition
-        time.sleep(1)
+        print("[BOT] ⏳ Multi-signal admission detection starting...")
 
-        # Wiggle the virtual mouse to force Google Meet's hidden bottom menu bar to appear
-        try:
-            from selenium.webdriver.common.action_chains import ActionChains
-            ActionChains(driver).move_by_offset(10, 10).perform()
-        except:
-            pass
+        # Multi-signal detection: check multiple indicators simultaneously
+        # Signals: URL change, page title, meeting elements, video preview
+        meeting_signals = {
+            'url_contains_meet': False,
+            'title_active': False,
+            'leave_button': False,
+            'meeting_controls': False,
+            'video_preview': False,
+        }
 
-        # Click on the video area to ensure UI is active
-        try:
-            ActionChains(driver).move_by_offset(100, 100).click().perform()
-        except:
-            pass
+        from selenium.webdriver.common.action_chains import ActionChains
 
-        print("[BOT] ⏳ Detecting meeting controls...")
+        for attempt in range(40):  # 40 attempts * 0.3s = 12 seconds max
+            time.sleep(0.3)
 
-        # Aggressive polling: check every 0.5 seconds for up to 30 seconds
-        in_meeting = False
-        meeting_selectors = [
-            "//button[@aria-label='Leave call']",
-            "//button[contains(@aria-label, 'Show everyone')]",
-            "//button[contains(@aria-label, 'Chat with everyone')]",
-            "//div[contains(@aria-label, 'People')]"
-        ]
+            # Signal 1: URL contains meet.google.com (not lobby URL)
+            try:
+                current_url = driver.current_url
+                if 'meet.google.com' in current_url and 'lobby' not in current_url:
+                    meeting_signals['url_contains_meet'] = True
+            except:
+                pass
 
-        for attempt in range(60):  # 60 attempts * 0.5s = 30 seconds max
-            time.sleep(0.5)
+            # Signal 2: Page title changes (lobby has "Waiting", active meeting has room code)
+            try:
+                page_title = driver.title.lower()
+                if 'waiting' not in page_title and len(page_title) > 5:
+                    meeting_signals['title_active'] = True
+            except:
+                pass
+
+            # Signal 3: Leave call button appears
+            try:
+                leave_btn = driver.find_element(By.XPATH, "//button[@aria-label='Leave call']")
+                if leave_btn.is_displayed():
+                    meeting_signals['leave_button'] = True
+            except:
+                pass
+
+            # Signal 4: Meeting control buttons appear
+            try:
+                controls = driver.find_element(By.XPATH, "//button[contains(@aria-label, 'Show everyone') or contains(@aria-label, 'Chat with everyone')]")
+                if controls.is_displayed():
+                    meeting_signals['meeting_controls'] = True
+            except:
+                pass
+
+            # Signal 5: Video/self preview appears (person icon or video element)
+            try:
+                video_elem = driver.find_element(By.CSS_SELECTOR, "video[autoplay], [data-video-preview], video[src]")
+                if video_elem.is_displayed():
+                    meeting_signals['video_preview'] = True
+            except:
+                pass
 
             # Wiggle mouse occasionally to keep UI awake
-            if attempt % 10 == 0:
+            if attempt % 5 == 0:
                 try:
-                    ActionChains(driver).move_by_offset(5, 5).perform()
+                    ActionChains(driver).move_by_offset(10, 10).perform()
                 except:
                     pass
 
-            for selector in meeting_selectors:
-                try:
-                    elem = driver.find_element(By.XPATH, selector)
-                    if elem.is_displayed():
-                        in_meeting = True
-                        print("[BOT] ✅ Meeting UI confirmed!")
-                        break
-                except:
-                    continue
+            # Count positive signals
+            positive_signals = sum(1 for v in meeting_signals.values() if v)
 
-            if in_meeting:
+            # Require at least 2 signals for confident detection (or just leave button)
+            if meeting_signals['leave_button'] or positive_signals >= 2:
+                print(f"[BOT] ✅ Meeting confirmed! Signals: {sum(1 for k,v in meeting_signals.items() if v)}/5")
+                print(f"   - URL: {'✓' if meeting_signals['url_contains_meet'] else '✗'}")
+                print(f"   - Title: {'✓' if meeting_signals['title_active'] else '✗'}")
+                print(f"   - Leave btn: {'✓' if meeting_signals['leave_button'] else '✗'}")
+                print(f"   - Controls: {'✓' if meeting_signals['meeting_controls'] else '✗'}")
+                print(f"   - Video: {'✓' if meeting_signals['video_preview'] else '✗'}")
+                in_meeting = True
                 break
+
+            if attempt % 10 == 0:
+                print(f"[BOT] ⏳ Detection progress: {positive_signals}/5 signals...")
 
         if not in_meeting:
             # Check if the host ended the call while we were waiting
@@ -181,7 +210,8 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
                 print("[BOT] 🛑 Host ended the meeting before we could start recording.")
                 return None
             else:
-                print("[BOT] ⚠️ Could not strictly verify UI controls, but proceeding to record anyway since lobby vanished.")
+                print(f"[BOT] ⚠️ Could not detect meeting signals: {meeting_signals}")
+                print("[BOT] ⚠️ Proceeding to record anyway since lobby vanished.")
                 
         print("[BOT] ✅ Admitted to the meeting!")
 

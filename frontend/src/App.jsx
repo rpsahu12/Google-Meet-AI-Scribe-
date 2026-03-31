@@ -163,15 +163,15 @@ function App() {
             setStatus('joining');
           } else if (jobStatus === 'processing') {
             setStatus('processing');
-          } else if (jobStatus === 'completed' && result) {
+          } else if (jobStatus === 'completed') {
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
             const newSummary = {
-              executive: result.executive,
-              actionItems: result.actionItems,
-              duration: result.duration,
-              participants: result.participants,
-              audioFile: result.audioFile
+              executive: result?.executive || 'No summary available',
+              actionItems: result?.actionItems || [],
+              duration: result?.duration || 'Unknown',
+              participants: result?.participants || [],
+              audioFile: result?.audioFile || null
             };
             setSummary(newSummary);
             setStatus('complete');
