@@ -122,35 +122,57 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             )))
             print("[BOT] ✅ Lobby screen disappeared")
         except Exception as e:
-            pass
+            print(f"[BOT] ⚠️ Lobby wait exception: {e}")
 
-        print("[BOT] ⏳ Waking up UI to find meeting controls...")
+        # Small delay to let the page transition
+        time.sleep(1)
+
+        # Wiggle the virtual mouse to force Google Meet's hidden bottom menu bar to appear
         try:
-            # Wiggle the virtual mouse to force Google Meet's hidden bottom menu bar to appear
             from selenium.webdriver.common.action_chains import ActionChains
             ActionChains(driver).move_by_offset(10, 10).perform()
         except:
             pass
-            
-        time.sleep(2)
 
-        # Quick 5-second checks instead of 30-second traps!
+        # Click on the video area to ensure UI is active
+        try:
+            ActionChains(driver).move_by_offset(100, 100).click().perform()
+        except:
+            pass
+
+        print("[BOT] ⏳ Detecting meeting controls...")
+
+        # Aggressive polling: check every 0.5 seconds for up to 30 seconds
         in_meeting = False
         meeting_selectors = [
             "//button[@aria-label='Leave call']",
             "//button[contains(@aria-label, 'Show everyone')]",
-            "//button[contains(@aria-label, 'Chat with everyone')]"
+            "//button[contains(@aria-label, 'Chat with everyone')]",
+            "//div[contains(@aria-label, 'People')]"
         ]
 
-        for selector in meeting_selectors:
-            try:
-                short_wait = WebDriverWait(driver, 5)
-                short_wait.until(EC.presence_of_element_located((By.XPATH, selector)))
-                in_meeting = True
-                print("[BOT] ✅ Meeting UI confirmed!")
+        for attempt in range(60):  # 60 attempts * 0.5s = 30 seconds max
+            time.sleep(0.5)
+
+            # Wiggle mouse occasionally to keep UI awake
+            if attempt % 10 == 0:
+                try:
+                    ActionChains(driver).move_by_offset(5, 5).perform()
+                except:
+                    pass
+
+            for selector in meeting_selectors:
+                try:
+                    elem = driver.find_element(By.XPATH, selector)
+                    if elem.is_displayed():
+                        in_meeting = True
+                        print("[BOT] ✅ Meeting UI confirmed!")
+                        break
+                except:
+                    continue
+
+            if in_meeting:
                 break
-            except:
-                continue
 
         if not in_meeting:
             # Check if the host ended the call while we were waiting
