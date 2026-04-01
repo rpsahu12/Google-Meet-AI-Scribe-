@@ -73,6 +73,8 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             print(f"[BOT] Chrome binary not found at {chrome_binary}. Letting UC auto-detect.")
             chrome_binary = None
 
+        options.add_argument("--lang=en-US")
+
         driver = uc.Chrome(
             options=options,
             use_subprocess=True,
@@ -100,7 +102,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
 
         # === STEP 4: Ask to Join ===
         print("[BOT] Locating 'Ask to join' button...")
-        time.sleep(3) # Let the camera initialize
+        time.sleep(3) 
         
         try:
             join_btn = driver.find_element(By.XPATH, "//button[contains(., 'Ask to join') or contains(., 'Join now')]")
@@ -108,115 +110,11 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
             print("[BOT] ✅ Clicked 'Ask to Join'!")
         except Exception as e:
             print("[BOT] ❌ Failed to click join button.")
-            _save_screenshot(driver, "error_join_click")
             raise e
-            
-        # === STEP 5: Wait for Admission and Start Recording ===
-        print("[BOT] ⏳ Waiting to be admitted... Please admit from host account! (120s timeout)")
 
-        # First wait for lobby screen to disappear
-        lobby_xpath = "//div[contains(., 'Waiting to be admitted')] | //span[contains(text(), 'asked to join') or contains(text(), 'Waiting for')]"
-        try:
-            WebDriverWait(driver, 120).until(EC.invisibility_of_element_located((By.XPATH, lobby_xpath)))
-            print("[BOT] ✅ Lobby screen disappeared")
-        except Exception as e:
-            print(f"[BOT] ⚠️ Lobby wait exception: {e}")
-
-        print("[BOT] ⏳ Multi-signal admission detection starting...")
-
-        # Multi-signal detection: check multiple indicators simultaneously
-        # Signals: URL change, page title, meeting elements, video preview
-        meeting_signals = {
-            'url_contains_meet': False,
-            'title_active': False,
-            'leave_button': False,
-            'meeting_controls': False,
-            'video_preview': False,
-        }
-
-        from selenium.webdriver.common.action_chains import ActionChains
-
-        for attempt in range(40):  # 40 attempts * 0.3s = 12 seconds max
-            time.sleep(0.3)
-
-            # Signal 1: URL contains meet.google.com (not lobby URL)
-            try:
-                current_url = driver.current_url
-                if 'meet.google.com' in current_url and 'lobby' not in current_url:
-                    meeting_signals['url_contains_meet'] = True
-            except:
-                pass
-
-            # Signal 2: Page title changes (lobby has "Waiting", active meeting has room code)
-            try:
-                page_title = driver.title.lower()
-                if 'waiting' not in page_title and len(page_title) > 5:
-                    meeting_signals['title_active'] = True
-            except:
-                pass
-
-            # Signal 3: Leave call button appears
-            try:
-                leave_btn = driver.find_element(By.XPATH, "//button[@aria-label='Leave call']")
-                if leave_btn.is_displayed():
-                    meeting_signals['leave_button'] = True
-            except:
-                pass
-
-            # Signal 4: Meeting control buttons appear
-            try:
-                controls = driver.find_element(By.XPATH, "//button[contains(@aria-label, 'Show everyone') or contains(@aria-label, 'Chat with everyone')]")
-                if controls.is_displayed():
-                    meeting_signals['meeting_controls'] = True
-            except:
-                pass
-
-            # Signal 5: Video/self preview appears (person icon or video element)
-            try:
-                video_elem = driver.find_element(By.CSS_SELECTOR, "video[autoplay], [data-video-preview], video[src]")
-                if video_elem.is_displayed():
-                    meeting_signals['video_preview'] = True
-            except:
-                pass
-
-            # Wiggle mouse occasionally to keep UI awake
-            if attempt % 5 == 0:
-                try:
-                    ActionChains(driver).move_by_offset(10, 10).perform()
-                except:
-                    pass
-
-            # Count positive signals
-            positive_signals = sum(1 for v in meeting_signals.values() if v)
-
-            # Require at least 2 signals for confident detection (or just leave button)
-            if meeting_signals['leave_button'] or positive_signals >= 2:
-                print(f"[BOT] ✅ Meeting confirmed! Signals: {sum(1 for k,v in meeting_signals.items() if v)}/5")
-                print(f"   - URL: {'✓' if meeting_signals['url_contains_meet'] else '✗'}")
-                print(f"   - Title: {'✓' if meeting_signals['title_active'] else '✗'}")
-                print(f"   - Leave btn: {'✓' if meeting_signals['leave_button'] else '✗'}")
-                print(f"   - Controls: {'✓' if meeting_signals['meeting_controls'] else '✗'}")
-                print(f"   - Video: {'✓' if meeting_signals['video_preview'] else '✗'}")
-                in_meeting = True
-                break
-
-            if attempt % 10 == 0:
-                print(f"[BOT] ⏳ Detection progress: {positive_signals}/5 signals...")
-
-        if not in_meeting:
-            # Check if the host ended the call while we were waiting
-            page_text = driver.page_source.lower()
-            if "left the meeting" in page_text or "meeting has ended" in page_text or "ended" in page_text or "return to home screen" in page_text:
-                print("[BOT] 🛑 Host ended the meeting before we could start recording.")
-                return None
-            else:
-                print(f"[BOT] ⚠️ Could not detect meeting signals: {meeting_signals}")
-                print("[BOT] ⚠️ Proceeding to record anyway since lobby vanished.")
-                
-        print("[BOT] ✅ Admitted to the meeting!")
-
-        # === STEP 6: Start FFmpeg Recording ===
-        print("[BOT] 🎙️ Starting FFmpeg audio capture...")
+        # === STEP 4.5: START RECORDING EARLY (Your Strategy) ===
+        print("[BOT] 🎙️ Starting early FFmpeg audio capture from lobby...")
+        # Ensure your AWS server has a virtual pulse audio sink running!
         ffmpeg_cmd = [
             "ffmpeg", "-f", "pulse", "-i", "default", "-acodec", "pcm_s16le",
             "-ar", "16000", "-ac", "1", temp_audio_filename, "-y"
@@ -224,34 +122,94 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot"):
         ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         is_recording = True
 
-        # === STEP 7: Monitor Meeting - Stop when "Leave call" button disappears ===
-        print("[BOT] 📍 Monitoring meeting status. Recording until meeting ends...")
-
-        while True:
-            time.sleep(2)  # Check every 2 seconds
-            try:
-                # Try to find the Leave call button
-                leave_btn = driver.find_element(By.XPATH, "//button[@aria-label='Leave call']")
-                # Button still exists, continue recording
-                pass
-            except (NoSuchElementException, WebDriverException, Exception) as e:
-                # Button vanished or connection lost - meeting ended
-                print(f"[BOT] 🛑 Leave button disappeared - Meeting ended ({type(e).__name__})")
+        # === STEP 5: Wait for Admission ===
+        print("[BOT] ⏳ Waiting to be admitted... (120s timeout)")
+        
+        in_meeting = False
+        for attempt in range(60): # 60 attempts * 2s = 120 seconds max
+            time.sleep(2)
+            
+            # Check 1: Did the URL change away from the meeting link entirely?
+            if "meet.google.com" not in driver.current_url:
+                print("[BOT] 🛑 Booted from Meet URL while waiting.")
                 break
 
-        # === STEP 8: Stop Recording ===
+            # Check 2: Look for the Leave Call button (Primary signal)
+            try:
+                leave_btn = driver.find_element(By.XPATH, "//button[@aria-label='Leave call']")
+                if leave_btn.is_displayed():
+                    print("[BOT] ✅ Officially admitted to the meeting!")
+                    in_meeting = True
+                    break
+            except NoSuchElementException:
+                pass # Still in lobby
+
+        if not in_meeting:
+            print("[BOT] 🛑 Timeout or rejected from meeting. Stopping early record.")
+            ffmpeg_process.terminate()
+            return None
+
+        # === STEP 6: Monitor Meeting for End/Kick ===
+        print("[BOT] 📍 Recording active. Monitoring for meeting end...")
+        
+        # Hard timeout safeguard (e.g., 2 hours max)
+        max_duration = 7200 
+        start_time = time.time()
+
+        while True:
+            time.sleep(3) # Check every 3 seconds
+            
+            # Condition A: Hard Timeout
+            if time.time() - start_time > max_duration:
+                print("[BOT] 🛑 Reached maximum meeting duration. Exiting.")
+                break
+
+            # Condition B: URL changed to the exit screen
+            current_url = driver.current_url
+            if "/left" in current_url or "meet.google.com" not in current_url:
+                print("[BOT] 🛑 URL indicates meeting has ended.")
+                break
+
+            # Condition C: Check page source for kick/end messages
+            # This catches "You've been removed" or "The meeting has ended" text
+            page_text = driver.page_source.lower()
+            if "you've been removed" in page_text or "left the meeting" in page_text or "return to home screen" in page_text:
+                print("[BOT] 🛑 Detected meeting end text on screen.")
+                break
+
+            # Condition D: The leave button vanished
+            try:
+                driver.find_element(By.XPATH, "//button[@aria-label='Leave call']")
+            except NoSuchElementException:
+                print("[BOT] 🛑 Leave button disappeared. Meeting likely ended.")
+                break
+
+        # === STEP 7: Stop Recording and Save ===
         if ffmpeg_process and is_recording:
             print("[BOT] 🛑 Stopping FFmpeg recording...")
             ffmpeg_process.terminate()
             ffmpeg_process.wait()
             is_recording = False
 
-            # Rename temp file to final file
             if os.path.exists(temp_audio_filename):
                 os.rename(temp_audio_filename, audio_filename)
-                print(f"[BOT] ✅ Audio saved to {audio_filename}")
-
+                print(f"[BOT] ✅ Audio saved to {audio_filename}. Ready for LLM processing.")
+                
         return audio_filename
+
+        # # === STEP 8: Stop Recording ===
+        # if ffmpeg_process and is_recording:
+        #     print("[BOT] 🛑 Stopping FFmpeg recording...")
+        #     ffmpeg_process.terminate()
+        #     ffmpeg_process.wait()
+        #     is_recording = False
+
+        #     # Rename temp file to final file
+        #     if os.path.exists(temp_audio_filename):
+        #         os.rename(temp_audio_filename, audio_filename)
+        #         print(f"[BOT] ✅ Audio saved to {audio_filename}")
+
+        # return audio_filename
 
     except Exception as e:
         print(f"[BOT] ❌ An error occurred: {e}")
