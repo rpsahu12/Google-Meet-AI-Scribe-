@@ -275,6 +275,8 @@ def _launch_chrome() -> uc.Chrome:
     Tries to launch Chrome up to 3 times with increasing stability measures.
     Returns a working driver or raises RuntimeError.
     """
+    os.environ["DISPLAY"] = ":99"
+    os.putenv("DISPLAY", ":99")
     chrome_binary  = "/usr/bin/google-chrome"
     chrome_version = None
 
@@ -436,7 +438,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
         driver_error_count = 0
 
         for attempt in range(ADMISSION_TIMEOUT // 2):
-            time.sleep(2)
+            time.sleep(1 if attempt < 30 else 2)
 
             if time.time() - last_screenshot_t >= 15:
                 _save_screenshot(driver, f"lobby_{attempt:03d}")
