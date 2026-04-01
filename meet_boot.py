@@ -9,224 +9,197 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException, WebDriverException
 )
+from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 # --- CONFIGURATION ---
-DEBUG_DIR = "debug_screenshots"
-MAX_MEETING_DURATION = 7200  # 2 hours hard cap
-ADMISSION_TIMEOUT = 120      # seconds to wait for host to admit bot
+DEBUG_DIR            = "debug_screenshots"
+MAX_MEETING_DURATION = 7200   # 2 hour hard cap
+ADMISSION_TIMEOUT    = 120    # seconds to wait for host to admit bot
+MONITOR_INTERVAL     = 3      # seconds between in-meeting checks
+MAX_DRIVER_ERRORS    = 5      # consecutive driver errors before giving up
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _save_screenshot(driver, name):
-    """Save a debug screenshot — call this aggressively while debugging."""
     try:
         os.makedirs(DEBUG_DIR, exist_ok=True)
         filepath = os.path.join(DEBUG_DIR, f"{name}.png")
         driver.save_screenshot(filepath)
-        print(f"[BOT] 📸 Screenshot saved: {filepath}")
+        print(f"[BOT] 📸 Screenshot: {filepath}")
     except Exception as e:
         print(f"[BOT] Screenshot failed ({name}): {e}")
 
 
-def _is_admitted(driver) -> bool:
+def _safe_driver_call(fn, default=None):
     """
-    Multi-signal check for whether the bot is inside the meeting.
-    Google Meet's UI changes frequently, so we use 5 independent signals.
-    Returns True if ANY signal fires.
+    Wrap any Selenium call so a ChromeDriver crash/disconnect
+    returns `default` instead of killing the whole bot.
     """
-    # Signal 1: Classic Leave Call button (aria-label varies by language/version)
-    leave_aria_labels = [
-        "Leave call",
-        "Leave meeting",
-        "End call",
-        "Hang up",
-    ]
-    for label in leave_aria_labels:
-        try:
-            btn = driver.find_element(By.XPATH, f"//button[@aria-label='{label}']")
-            if btn.is_displayed():
-                print(f"[BOT] ✅ Admission signal: found button aria-label='{label}'")
-                return True
-        except NoSuchElementException:
-            pass
-
-    # Signal 2: Data-call-ended attribute is absent — when you're IN a call,
-    # Meet renders a container without this attribute
     try:
-        # The participant tile grid only exists when you're in the meeting
-        driver.find_element(By.XPATH, "//*[@data-participant-id]")
-        print("[BOT] ✅ Admission signal: participant tile found")
-        return True
-    except NoSuchElementException:
-        pass
+        return fn()
+    except (
+        WebDriverException,
+        MaxRetryError,
+        NewConnectionError,
+        ConnectionResetError,
+        ConnectionRefusedError,
+        OSError,
+    ) as e:
+        msg = str(e)
+        if "cannot determine loading status" not in msg and \
+           "target window already closed" not in msg:
+            print(f"[BOT] ⚠️  Driver call failed (non-fatal): {msg[:120]}")
+        return default
 
-    # Signal 3: URL pattern — Google Meet appends a room code after joining
-    # Lobby URL: meet.google.com/abc-defg-hij
-    # In-meeting URL: same but page state is different — check for subtler signals
+
+def _get_page_text(driver) -> str:
+    result = _safe_driver_call(
+        lambda: driver.execute_script(
+            "return document.body ? document.body.innerText.toLowerCase() : '';"
+        ),
+        default=""
+    )
+    return result or ""
+
+
+def _get_current_url(driver) -> str:
+    return _safe_driver_call(lambda: driver.current_url, default="")
+
+
+def _find_element_safe(driver, xpath):
     try:
-        # The bottom toolbar with mic/camera controls only renders post-admission
-        toolbar = driver.find_element(
-            By.XPATH,
-            "//div[@jsname='DOFKe' or @data-meeting-title or @aria-label='Meeting controls']"
-        )
-        if toolbar.is_displayed():
-            print("[BOT] ✅ Admission signal: meeting controls toolbar found")
-            return True
-    except NoSuchElementException:
-        pass
-
-    # Signal 4: Look for the mute/unmute button by icon or tooltip
-    mute_labels = ["Turn off microphone", "Turn on microphone", "Mute", "Unmute"]
-    for label in mute_labels:
-        try:
-            btn = driver.find_element(By.XPATH, f"//button[@aria-label='{label}']")
-            if btn.is_displayed():
-                print(f"[BOT] ✅ Admission signal: found mute button '{label}'")
-                return True
-        except NoSuchElementException:
-            pass
-
-    # Signal 5: Page title changes from "Waiting..." to the meeting name
-    try:
-        title = driver.title.lower()
-        if "waiting" not in title and "ask to join" not in title and "meet" in title:
-            print(f"[BOT] ✅ Admission signal: page title changed to '{driver.title}'")
-            return True
+        el = driver.find_element(By.XPATH, xpath)
+        return el if el.is_displayed() else None
     except Exception:
-        pass
+        return None
+
+
+# ── Admission detection ───────────────────────────────────────────────────────
+
+def _is_admitted(driver) -> bool:
+    """5 independent signals — any one firing = bot is inside the meeting."""
+
+    # Signal 1: Leave/End call button
+    for label in ["Leave call", "Leave meeting", "End call", "Hang up"]:
+        if _find_element_safe(driver, f"//button[@aria-label='{label}']"):
+            print(f"[BOT] ✅ Admitted — leave button: '{label}'")
+            return True
+
+    # Signal 2: Participant tile (only rendered inside the meeting)
+    if _find_element_safe(driver, "//*[@data-participant-id]"):
+        print("[BOT] ✅ Admitted — participant tile found")
+        return True
+
+    # Signal 3: Mute/unmute button in the in-meeting toolbar
+    for label in ["Turn off microphone", "Turn on microphone", "Mute", "Unmute"]:
+        if _find_element_safe(driver, f"//button[@aria-label='{label}']"):
+            print(f"[BOT] ✅ Admitted — mute button: '{label}'")
+            return True
+
+    # Signal 4: Meeting controls toolbar container
+    for attr in ["jsname='DOFKe'", "data-meeting-title", "aria-label='Meeting controls'"]:
+        if _find_element_safe(driver, f"//*[@{attr}]"):
+            print(f"[BOT] ✅ Admitted — controls toolbar: @{attr}")
+            return True
+
+    # Signal 5: Page title no longer says "Waiting" / "Ask to join"
+    title = _safe_driver_call(lambda: driver.title.lower(), default="")
+    if title and "waiting" not in title and "ask to join" not in title and "meet" in title:
+        print(f"[BOT] ✅ Admitted — page title: '{title}'")
+        return True
+
+    # Signal 6: Rendered page text shows in-meeting UI
+    body = _get_page_text(driver)
+    if body and ("contributors" in body or "in the meeting" in body):
+        url = _get_current_url(driver)
+        if url and "/lookup" not in url:
+            print("[BOT] ✅ Admitted — 'in the meeting' text found")
+            return True
 
     return False
 
 
+# ── Meeting-end detection ─────────────────────────────────────────────────────
+
 def _is_meeting_ended(driver) -> tuple[bool, str]:
-    """
-    Multi-signal check for whether the meeting has ended or the bot was kicked.
-    Returns (True, reason_string) or (False, "").
-    """
-    try:
-        current_url = driver.current_url
-    except WebDriverException:
-        return True, "Browser/driver crashed"
+    url = _get_current_url(driver)
 
-    # Signal 1: URL left Google Meet entirely
-    if "meet.google.com" not in current_url:
-        return True, f"URL left Meet: {current_url}"
+    if url is None:
+        return True, "Driver unreachable — Chrome likely crashed"
+    if "meet.google.com" not in url:
+        return True, f"URL left Meet: {url}"
+    if "/left" in url:
+        return True, f"Post-call URL: {url}"
 
-    # Signal 2: Google Meet's post-call screen URL
-    if "/left" in current_url or "lookup" in current_url:
-        return True, f"Post-call URL detected: {current_url}"
+    body = _get_page_text(driver)
+    if body is None:
+        return True, "Could not read page — browser likely crashed"
 
-    # Signal 3: Check page source for end-of-meeting strings
-    # Use a JS snippet — faster than fetching the whole page_source
-    try:
-        end_strings = [
-            "you've been removed",
-            "you have been removed",
-            "the meeting has ended",
-            "return to home screen",
-            "left the meeting",
-            "meeting ended",
-            "kicked from",
-        ]
-        # Pull innerText of body — faster and catches React-rendered text
-        body_text = driver.execute_script(
-            "return document.body ? document.body.innerText.toLowerCase() : '';"
-        )
-        for s in end_strings:
-            if s in body_text:
-                return True, f"End text detected: '{s}'"
-    except WebDriverException:
-        return True, "JS execution failed — browser likely crashed"
+    for phrase in [
+        "you've been removed", "you have been removed",
+        "the meeting has ended", "return to home screen",
+        "meeting ended", "left the meeting", "this meeting has ended",
+    ]:
+        if phrase in body:
+            return True, f"End phrase: '{phrase}'"
 
-    # Signal 4: Leave button has disappeared (you were kicked or meeting ended)
-    leave_found = False
-    for label in ["Leave call", "Leave meeting", "End call", "Hang up"]:
-        try:
-            btn = driver.find_element(By.XPATH, f"//button[@aria-label='{label}']")
-            if btn.is_displayed():
-                leave_found = True
-                break
-        except NoSuchElementException:
-            pass
-
-    if not leave_found:
-        # Don't trigger immediately — do a double-check after a short pause
-        # to avoid false positives during UI transitions
-        return True, "Leave button disappeared"
+    leave_visible = any(
+        _find_element_safe(driver, f"//button[@aria-label='{label}']")
+        for label in ["Leave call", "Leave meeting", "End call", "Hang up"]
+    )
+    if not leave_visible:
+        return True, "Leave button not found"
 
     return False, ""
 
 
+# ── FFmpeg helpers ────────────────────────────────────────────────────────────
+
 def _start_ffmpeg(output_path: str) -> subprocess.Popen:
-    """Start FFmpeg recording from PulseAudio default sink monitor."""
     print(f"[BOT] 🎙️  Starting FFmpeg → {output_path}")
     cmd = [
-        "ffmpeg",
-        "-f", "pulse",
-        "-i", "default",          # PulseAudio default source (microphone or monitor)
-        "-acodec", "pcm_s16le",   # 16-bit PCM — required by most speech APIs
-        "-ar", "16000",           # 16 kHz sample rate
-        "-ac", "1",               # Mono
-        "-y",                     # Overwrite without asking
-        output_path,
+        "ffmpeg", "-f", "pulse", "-i", "default",
+        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        "-y", output_path,
     ]
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,    # Capture stderr so you can debug FFmpeg issues
-    )
-    # Give FFmpeg a moment to start and validate it didn't immediately crash
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     time.sleep(2)
     if proc.poll() is not None:
-        stderr_output = proc.stderr.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"FFmpeg failed to start:\n{stderr_output}")
+        err = proc.stderr.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"FFmpeg failed to start:\n{err}")
     print("[BOT] ✅ FFmpeg recording started")
     return proc
 
 
-def _stop_ffmpeg(proc: subprocess.Popen, temp_path: str, final_path: str) -> bool:
-    """
-    Gracefully stop FFmpeg and finalize the audio file.
-    Returns True if the final file exists and has content.
-    """
+def _stop_ffmpeg(proc, temp_path: str, final_path: str) -> bool:
     if proc is None:
         return False
-
-    # Send SIGTERM — FFmpeg catches this and writes its file trailer cleanly
     proc.terminate()
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        print("[BOT] ⚠️  FFmpeg didn't stop gracefully, killing...")
         proc.kill()
         proc.wait()
 
-    if os.path.exists(temp_path):
-        size = os.path.getsize(temp_path)
-        if size > 0:
-            os.rename(temp_path, final_path)
-            print(f"[BOT] ✅ Audio saved: {final_path} ({size / 1024:.1f} KB)")
-            return True
-        else:
-            print(f"[BOT] ⚠️  Audio file is empty: {temp_path}")
-            os.remove(temp_path)
-            return False
-    else:
-        print(f"[BOT] ⚠️  Temp audio file not found: {temp_path}")
-        return False
+    if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+        os.rename(temp_path, final_path)
+        print(f"[BOT] ✅ Audio saved: {final_path} ({os.path.getsize(final_path)/1024:.1f} KB)")
+        return True
+    print(f"[BOT] ⚠️  Audio file missing or empty: {temp_path}")
+    return False
 
+
+# ── Main bot logic ────────────────────────────────────────────────────────────
 
 def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
-    """
-    Main synchronous bot logic.
-    Returns the path to the recorded audio file, or None on failure.
-    """
-    os.environ["DISPLAY"] = ":99"  # Xvfb virtual display
+    os.environ["DISPLAY"] = ":99"
 
-    timestamp = int(time.time())
-    temp_audio = f"meeting_audio_{timestamp}_temp.wav"
+    timestamp   = int(time.time())
+    temp_audio  = f"meeting_audio_{timestamp}_temp.wav"
     final_audio = f"meeting_audio_{timestamp}.wav"
     ffmpeg_proc = None
-    driver = None
+    driver      = None
 
     print(f"[BOT] ══════════════════════════════════════════")
     print(f"[BOT] Meet URL : {meet_url}")
@@ -234,7 +207,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
     print(f"[BOT] ══════════════════════════════════════════")
 
     try:
-        # ── STEP 1: Launch Chrome ──────────────────────────────────────────────
+        # ── STEP 1: Launch Chrome ──────────────────────────────────────────
         print("[BOT] Launching Chrome...")
         options = uc.ChromeOptions()
         options.add_argument("--no-sandbox")
@@ -243,9 +216,8 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--start-maximized")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        # These two flags grant mic/camera without a popup dialog
         options.add_argument("--use-fake-ui-for-media-stream")
-        # Remove --use-fake-device-for-media-stream so PulseAudio is used for real audio
+        # ❌ NOT --use-fake-device-for-media-stream (that silences real audio)
         options.add_argument("--lang=en-US")
         options.add_experimental_option("prefs", {
             "profile.default_content_setting_values.media_stream_mic": 1,
@@ -254,15 +226,12 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
             "profile.default_content_setting_values.notifications": 1,
         })
 
-        # Auto-detect installed Chrome version
-        chrome_binary = "/usr/bin/google-chrome"
+        chrome_binary  = "/usr/bin/google-chrome"
         chrome_version = None
         if os.path.exists(chrome_binary):
             try:
-                ver_str = subprocess.check_output(
-                    [chrome_binary, "--version"]
-                ).decode().strip()
-                chrome_version = int(ver_str.split()[-1].split(".")[0])
+                ver = subprocess.check_output([chrome_binary, "--version"]).decode().strip()
+                chrome_version = int(ver.split()[-1].split(".")[0])
                 print(f"[BOT] Chrome version: {chrome_version}")
             except Exception as e:
                 print(f"[BOT] Could not detect Chrome version: {e}")
@@ -276,17 +245,17 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
             browser_executable_path=chrome_binary,
             version_main=chrome_version,
         )
-        driver.implicitly_wait(5)  # Short implicit wait; we do explicit waits below
+        driver.implicitly_wait(5)
         print("[BOT] ✅ Chrome launched")
 
-        # ── STEP 2: Navigate to Meet ───────────────────────────────────────────
+        # ── STEP 2: Navigate ───────────────────────────────────────────────
         print("[BOT] Navigating to meeting URL...")
         driver.get(meet_url)
-        time.sleep(5)  # Let the page fully load JS
+        time.sleep(5)
         _save_screenshot(driver, "01_after_navigation")
 
-        # ── STEP 3: Enter name (pre-join lobby) ───────────────────────────────
-        print("[BOT] Looking for name input field...")
+        # ── STEP 3: Enter name ─────────────────────────────────────────────
+        print("[BOT] Looking for name input...")
         try:
             name_input = WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((
@@ -299,23 +268,10 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
             print(f"[BOT] ✅ Name entered: {bot_name}")
             time.sleep(1)
         except TimeoutException:
-            print("[BOT] No name field found — may already be signed in. Continuing...")
+            print("[BOT] No name field — may already be signed in. Continuing...")
         _save_screenshot(driver, "02_after_name_entry")
 
-        # ── STEP 4: Dismiss mic/camera toggles (turn both off) ────────────────
-        # This prevents the bot from broadcasting noise into the meeting
-        print("[BOT] Turning off mic and camera...")
-        for aria in ["Turn off microphone", "Turn on microphone",
-                     "Turn off camera", "Turn on camera"]:
-            try:
-                btn = driver.find_element(By.XPATH, f"//button[@aria-label='{aria}']")
-                if "off" not in aria.lower() and btn.is_displayed():
-                    btn.click()
-                    time.sleep(0.5)
-            except NoSuchElementException:
-                pass
-
-        # ── STEP 5: Click "Ask to join" / "Join now" ──────────────────────────
+        # ── STEP 4: Click join button ──────────────────────────────────────
         print("[BOT] Clicking join button...")
         join_xpaths = [
             "//button[contains(., 'Ask to join')]",
@@ -331,7 +287,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
                     EC.element_to_be_clickable((By.XPATH, xpath))
                 )
                 btn.click()
-                print(f"[BOT] ✅ Clicked join button (xpath: {xpath})")
+                print(f"[BOT] ✅ Clicked join button")
                 clicked = True
                 break
             except (TimeoutException, NoSuchElementException):
@@ -343,27 +299,35 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
 
         _save_screenshot(driver, "03_after_join_click")
 
-        # ── STEP 6: Start recording AFTER joining lobby ────────────────────────
-        # Recording from lobby is fine — the important thing is FFmpeg is running
-        # before we get admitted so we don't miss the first seconds of meeting audio
+        # ── STEP 5: Start recording from lobby ────────────────────────────
         ffmpeg_proc = _start_ffmpeg(temp_audio)
 
-        # ── STEP 7: Wait for admission ─────────────────────────────────────────
+        # ── STEP 6: Wait for admission ─────────────────────────────────────
         print(f"[BOT] ⏳ Waiting up to {ADMISSION_TIMEOUT}s to be admitted...")
-        admitted = False
-        screenshot_interval = 15  # Save a screenshot every N seconds while waiting
-        last_screenshot_time = time.time()
+        admitted           = False
+        last_screenshot_t  = time.time()
+        driver_error_count = 0
 
         for attempt in range(ADMISSION_TIMEOUT // 2):
             time.sleep(2)
 
-            # Periodic screenshots to debug lobby state
-            if time.time() - last_screenshot_time >= screenshot_interval:
+            if time.time() - last_screenshot_t >= 15:
                 _save_screenshot(driver, f"lobby_{attempt:03d}")
-                last_screenshot_time = time.time()
+                last_screenshot_t = time.time()
 
-            if "meet.google.com" not in driver.current_url:
-                print("[BOT] 🛑 Redirected away from Meet while waiting. Aborting.")
+            url = _get_current_url(driver)
+            if url is None:
+                driver_error_count += 1
+                print(f"[BOT] ⚠️  Driver unreachable in lobby ({driver_error_count}/{MAX_DRIVER_ERRORS})")
+                if driver_error_count >= MAX_DRIVER_ERRORS:
+                    print("[BOT] 🛑 Too many driver errors. Aborting.")
+                    break
+                continue
+
+            driver_error_count = 0
+
+            if "meet.google.com" not in url:
+                print("[BOT] 🛑 Redirected away from Meet. Aborting.")
                 break
 
             if _is_admitted(driver):
@@ -372,48 +336,60 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
 
         if not admitted:
             _save_screenshot(driver, "04_admission_failed")
-            print("[BOT] ❌ Was not admitted within the timeout. Stopping.")
+            print("[BOT] ❌ Not admitted within timeout.")
             _stop_ffmpeg(ffmpeg_proc, temp_audio, final_audio)
-            ffmpeg_proc = None  # Mark as already handled
+            ffmpeg_proc = None
             return None
 
         _save_screenshot(driver, "04_admitted_to_meeting")
         print("[BOT] 🎉 Inside the meeting! Monitoring for end...")
 
-        # ── STEP 8: Monitor meeting until it ends ─────────────────────────────
-        start_time = time.time()
-        consecutive_end_signals = 0  # Require 2 consecutive signals to avoid false positives
+        # ── STEP 7: Monitor until meeting ends ────────────────────────────
+        start_time              = time.time()
+        consecutive_end_signals = 0
+        driver_error_count      = 0
 
         while True:
-            time.sleep(3)
+            time.sleep(MONITOR_INTERVAL)
 
-            elapsed = time.time() - start_time
-            if elapsed >= MAX_MEETING_DURATION:
-                print(f"[BOT] 🛑 Hard timeout ({MAX_MEETING_DURATION}s). Exiting.")
+            if time.time() - start_time >= MAX_MEETING_DURATION:
+                print(f"[BOT] 🛑 Hard timeout reached. Exiting.")
                 break
 
             ended, reason = _is_meeting_ended(driver)
+
             if ended:
+                url = _get_current_url(driver)
+                if url is None:
+                    # Driver crash — count separately
+                    driver_error_count += 1
+                    print(f"[BOT] ⚠️  Driver unreachable ({driver_error_count}/{MAX_DRIVER_ERRORS}): {reason}")
+                    if driver_error_count >= MAX_DRIVER_ERRORS:
+                        print("[BOT] 🛑 Driver crashed. Stopping.")
+                        break
+                    continue
+
                 consecutive_end_signals += 1
-                print(f"[BOT] ⚠️  End signal ({consecutive_end_signals}/2): {reason}")
+                print(f"[BOT] ⚠️  End signal {consecutive_end_signals}/2: {reason}")
                 if consecutive_end_signals >= 2:
-                    print(f"[BOT] 🛑 Meeting ended confirmed: {reason}")
+                    print(f"[BOT] 🛑 Meeting ended: {reason}")
                     break
-                time.sleep(3)  # Wait before second check
+                time.sleep(3)
             else:
-                consecutive_end_signals = 0  # Reset on a clean check
+                consecutive_end_signals = 0
+                driver_error_count      = 0
 
         _save_screenshot(driver, "05_after_meeting_end")
 
-        # ── STEP 9: Stop recording and return file path ────────────────────────
-        success = _stop_ffmpeg(ffmpeg_proc, temp_audio, final_audio)
-        ffmpeg_proc = None  # Mark as handled so finally block skips it
+        # ── STEP 8: Stop recording ─────────────────────────────────────────
+        success     = _stop_ffmpeg(ffmpeg_proc, temp_audio, final_audio)
+        ffmpeg_proc = None  # Prevent finally from double-stopping
 
         if success:
-            print(f"[BOT] ✅ Audio ready for transcription: {final_audio}")
+            print(f"[BOT] ✅ Ready for transcription: {final_audio}")
             return final_audio
         else:
-            print("[BOT] ❌ Audio file missing or empty. Nothing to transcribe.")
+            print("[BOT] ❌ Audio missing or empty.")
             return None
 
     except Exception as e:
@@ -423,11 +399,9 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
         raise
 
     finally:
-        # Only stop FFmpeg here if it wasn't already stopped above
         if ffmpeg_proc is not None:
             print("[BOT] [finally] Stopping FFmpeg...")
             _stop_ffmpeg(ffmpeg_proc, temp_audio, final_audio)
-
         if driver:
             print("[BOT] [finally] Closing browser...")
             try:
@@ -436,17 +410,15 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
                 pass
 
 
-# ── Async wrapper for FastAPI ──────────────────────────────────────────────────
+# ── Async wrapper for FastAPI ─────────────────────────────────────────────────
+
 async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
-    """Run the bot in a thread so it doesn't block the FastAPI event loop."""
     return await asyncio.to_thread(_run_bot_sync, meet_url, bot_name)
 
 
 # ── Local test ────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     test_url = input("Paste a Google Meet link to test: ").strip()
-    result = asyncio.run(join_meet_and_record(test_url))
-    if result:
-        print(f"\n✅ Recording complete: {result}")
-    else:
-        print("\n❌ Bot finished without producing an audio file.")
+    result   = asyncio.run(join_meet_and_record(test_url))
+    print(f"\n{'✅ Recording: ' + result if result else '❌ No audio file produced.'}")
