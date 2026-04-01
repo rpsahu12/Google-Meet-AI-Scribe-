@@ -2,6 +2,7 @@ import asyncio
 import subprocess
 import os
 import time
+import json
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -13,10 +14,10 @@ from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 # --- CONFIGURATION ---
 DEBUG_DIR            = "debug_screenshots"
-MAX_MEETING_DURATION = 7200   # 2 hour hard cap
-ADMISSION_TIMEOUT    = 120    # seconds to wait for host to admit bot
-MONITOR_INTERVAL     = 3      # seconds between in-meeting checks
-MAX_DRIVER_ERRORS    = 5      # consecutive driver errors before giving up
+MAX_MEETING_DURATION = 7200
+ADMISSION_TIMEOUT    = 120
+MONITOR_INTERVAL     = 3
+MAX_DRIVER_ERRORS    = 5
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -32,24 +33,16 @@ def _save_screenshot(driver, name):
 
 
 def _safe_driver_call(fn, default=None):
-    """
-    Wrap any Selenium call so a ChromeDriver crash/disconnect
-    returns `default` instead of killing the whole bot.
-    """
     try:
         return fn()
     except (
-        WebDriverException,
-        MaxRetryError,
-        NewConnectionError,
-        ConnectionResetError,
-        ConnectionRefusedError,
-        OSError,
+        WebDriverException, MaxRetryError, NewConnectionError,
+        ConnectionResetError, ConnectionRefusedError, OSError,
     ) as e:
         msg = str(e)
         if "cannot determine loading status" not in msg and \
            "target window already closed" not in msg:
-            print(f"[BOT] ⚠️  Driver call failed (non-fatal): {msg[:120]}")
+            print(f"[BOT] ⚠️  Driver call failed: {msg[:120]}")
         return default
 
 
@@ -57,8 +50,7 @@ def _get_page_text(driver) -> str:
     result = _safe_driver_call(
         lambda: driver.execute_script(
             "return document.body ? document.body.innerText.toLowerCase() : '';"
-        ),
-        default=""
+        ), default=""
     )
     return result or ""
 
@@ -75,46 +67,153 @@ def _find_element_safe(driver, xpath):
         return None
 
 
+# ── DOM DEBUGGER — run this to discover what's actually in the page ───────────
+
+def _dump_dom_debug(driver, label="debug"):
+    """
+    Dumps ALL buttons and their attributes to a JSON file.
+    Run this right after admission to find the real aria-labels.
+    """
+    print(f"[BOT] 🔍 Dumping DOM debug info ({label})...")
+    try:
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+
+        # 1. Dump all buttons with their text and aria-label
+        buttons = driver.execute_script("""
+            var buttons = document.querySelectorAll('button');
+            var result = [];
+            buttons.forEach(function(btn) {
+                result.push({
+                    text: btn.innerText.trim().substring(0, 80),
+                    aria_label: btn.getAttribute('aria-label') || '',
+                    aria_pressed: btn.getAttribute('aria-pressed') || '',
+                    data_is_muted: btn.getAttribute('data-is-muted') || '',
+                    class: btn.className.substring(0, 60),
+                    id: btn.id || '',
+                    visible: btn.offsetParent !== null
+                });
+            });
+            return result;
+        """)
+
+        filepath = os.path.join(DEBUG_DIR, f"{label}_buttons.json")
+        with open(filepath, "w") as f:
+            json.dump(buttons, f, indent=2)
+        print(f"[BOT] 🔍 Saved {len(buttons)} buttons → {filepath}")
+
+        # 2. Dump page title and URL
+        info = {
+            "url": _get_current_url(driver),
+            "title": _safe_driver_call(lambda: driver.title, default=""),
+            "body_text_sample": _get_page_text(driver)[:500],
+        }
+        info_path = os.path.join(DEBUG_DIR, f"{label}_page_info.json")
+        with open(info_path, "w") as f:
+            json.dump(info, f, indent=2)
+        print(f"[BOT] 🔍 Page info → {info_path}")
+
+        # 3. Dump all elements with aria-label (catches non-button controls)
+        aria_elements = driver.execute_script("""
+            var els = document.querySelectorAll('[aria-label]');
+            var result = [];
+            els.forEach(function(el) {
+                result.push({
+                    tag: el.tagName,
+                    aria_label: el.getAttribute('aria-label'),
+                    role: el.getAttribute('role') || '',
+                    visible: el.offsetParent !== null
+                });
+            });
+            return result;
+        """)
+        aria_path = os.path.join(DEBUG_DIR, f"{label}_aria_elements.json")
+        with open(aria_path, "w") as f:
+            json.dump(aria_elements, f, indent=2)
+        print(f"[BOT] 🔍 {len(aria_elements)} aria-label elements → {aria_path}")
+
+        # 4. Print visible button summary to logs immediately
+        print(f"[BOT] ── Visible buttons with aria-labels ──")
+        for b in buttons:
+            if b.get("visible") and (b.get("aria_label") or b.get("text")):
+                print(f"  aria-label='{b['aria_label']}' | text='{b['text']}'")
+        print(f"[BOT] ─────────────────────────────────────")
+
+    except Exception as e:
+        print(f"[BOT] DOM debug failed: {e}")
+
+
 # ── Admission detection ───────────────────────────────────────────────────────
 
 def _is_admitted(driver) -> bool:
-    """5 independent signals — any one firing = bot is inside the meeting."""
+    """
+    Checks admission using both hardcoded signals AND a live DOM scan.
+    The live scan catches any aria-label Google Meet uses on this server's Chrome.
+    """
 
-    # Signal 1: Leave/End call button
-    for label in ["Leave call", "Leave meeting", "End call", "Hang up"]:
+    # --- Hardcoded signals (known aria-labels) ---
+    for label in ["Leave call", "Leave meeting", "End call", "Hang up",
+                  "Leave", "End meeting"]:
         if _find_element_safe(driver, f"//button[@aria-label='{label}']"):
             print(f"[BOT] ✅ Admitted — leave button: '{label}'")
             return True
 
-    # Signal 2: Participant tile (only rendered inside the meeting)
     if _find_element_safe(driver, "//*[@data-participant-id]"):
         print("[BOT] ✅ Admitted — participant tile found")
         return True
 
-    # Signal 3: Mute/unmute button in the in-meeting toolbar
-    for label in ["Turn off microphone", "Turn on microphone", "Mute", "Unmute"]:
+    for label in ["Turn off microphone", "Turn on microphone", "Mute", "Unmute",
+                  "microphone", "Microphone"]:
         if _find_element_safe(driver, f"//button[@aria-label='{label}']"):
             print(f"[BOT] ✅ Admitted — mute button: '{label}'")
             return True
 
-    # Signal 4: Meeting controls toolbar container
-    for attr in ["jsname='DOFKe'", "data-meeting-title", "aria-label='Meeting controls'"]:
+    for attr in ["jsname='DOFKe'", "data-meeting-title",
+                 "aria-label='Meeting controls'", "jsname='r4nke'"]:
         if _find_element_safe(driver, f"//*[@{attr}]"):
-            print(f"[BOT] ✅ Admitted — controls toolbar: @{attr}")
+            print(f"[BOT] ✅ Admitted — controls element: @{attr}")
             return True
 
-    # Signal 5: Page title no longer says "Waiting" / "Ask to join"
     title = _safe_driver_call(lambda: driver.title.lower(), default="")
     if title and "waiting" not in title and "ask to join" not in title and "meet" in title:
         print(f"[BOT] ✅ Admitted — page title: '{title}'")
         return True
 
-    # Signal 6: Rendered page text shows in-meeting UI
+    # --- Live DOM scan: look for ANY button that sounds like "leave" or "hang up" ---
+    # This catches localized or version-specific labels we haven't hardcoded
+    try:
+        result = _safe_driver_call(lambda: driver.execute_script("""
+            var buttons = document.querySelectorAll('button[aria-label]');
+            var leaveKeywords = ['leave', 'hang', 'end call', 'disconnect', 'exit'];
+            var muteKeywords  = ['microphone', 'mute', 'mic'];
+            var found = {leave: null, mute: null};
+            buttons.forEach(function(btn) {
+                var label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if (!found.leave && leaveKeywords.some(k => label.includes(k)) && btn.offsetParent) {
+                    found.leave = btn.getAttribute('aria-label');
+                }
+                if (!found.mute && muteKeywords.some(k => label.includes(k)) && btn.offsetParent) {
+                    found.mute = btn.getAttribute('aria-label');
+                }
+            });
+            return found;
+        """), default=None)
+
+        if result:
+            if result.get("leave"):
+                print(f"[BOT] ✅ Admitted — live scan found leave button: '{result['leave']}'")
+                return True
+            if result.get("mute"):
+                print(f"[BOT] ✅ Admitted — live scan found mute button: '{result['mute']}'")
+                return True
+    except Exception as e:
+        print(f"[BOT] Live scan error: {e}")
+
+    # --- Body text check (last resort) ---
     body = _get_page_text(driver)
     if body and ("contributors" in body or "in the meeting" in body):
         url = _get_current_url(driver)
         if url and "/lookup" not in url:
-            print("[BOT] ✅ Admitted — 'in the meeting' text found")
+            print("[BOT] ✅ Admitted — 'in the meeting' body text found")
             return True
 
     return False
@@ -124,9 +223,8 @@ def _is_admitted(driver) -> bool:
 
 def _is_meeting_ended(driver) -> tuple[bool, str]:
     url = _get_current_url(driver)
-
     if url is None:
-        return True, "Driver unreachable — Chrome likely crashed"
+        return True, "Driver unreachable"
     if "meet.google.com" not in url:
         return True, f"URL left Meet: {url}"
     if "/left" in url:
@@ -134,22 +232,29 @@ def _is_meeting_ended(driver) -> tuple[bool, str]:
 
     body = _get_page_text(driver)
     if body is None:
-        return True, "Could not read page — browser likely crashed"
-
-    for phrase in [
-        "you've been removed", "you have been removed",
-        "the meeting has ended", "return to home screen",
-        "meeting ended", "left the meeting", "this meeting has ended",
-    ]:
+        return True, "Could not read page"
+    for phrase in ["you've been removed", "you have been removed",
+                   "the meeting has ended", "return to home screen",
+                   "meeting ended", "left the meeting", "this meeting has ended"]:
         if phrase in body:
             return True, f"End phrase: '{phrase}'"
 
-    leave_visible = any(
-        _find_element_safe(driver, f"//button[@aria-label='{label}']")
-        for label in ["Leave call", "Leave meeting", "End call", "Hang up"]
-    )
-    if not leave_visible:
-        return True, "Leave button not found"
+    # Live scan for leave button (same keyword matching as admission)
+    result = _safe_driver_call(lambda: driver.execute_script("""
+        var buttons = document.querySelectorAll('button[aria-label]');
+        var keywords = ['leave', 'hang', 'end call', 'disconnect'];
+        var found = false;
+        buttons.forEach(function(btn) {
+            var label = (btn.getAttribute('aria-label') || '').toLowerCase();
+            if (keywords.some(k => label.includes(k)) && btn.offsetParent) {
+                found = true;
+            }
+        });
+        return found;
+    """), default=True)  # default True = assume ended if we can't check
+
+    if not result:
+        return True, "Leave button not found (live scan)"
 
     return False, ""
 
@@ -181,7 +286,6 @@ def _stop_ffmpeg(proc, temp_path: str, final_path: str) -> bool:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
-
     if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
         os.rename(temp_path, final_path)
         print(f"[BOT] ✅ Audio saved: {final_path} ({os.path.getsize(final_path)/1024:.1f} KB)")
@@ -217,7 +321,6 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
         options.add_argument("--start-maximized")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--use-fake-ui-for-media-stream")
-        # ❌ NOT --use-fake-device-for-media-stream (that silences real audio)
         options.add_argument("--lang=en-US")
         options.add_experimental_option("prefs", {
             "profile.default_content_setting_values.media_stream_mic": 1,
@@ -299,7 +402,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
 
         _save_screenshot(driver, "03_after_join_click")
 
-        # ── STEP 5: Start recording from lobby ────────────────────────────
+        # ── STEP 5: Start recording ────────────────────────────────────────
         ffmpeg_proc = _start_ffmpeg(temp_audio)
 
         # ── STEP 6: Wait for admission ─────────────────────────────────────
@@ -320,14 +423,13 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
                 driver_error_count += 1
                 print(f"[BOT] ⚠️  Driver unreachable in lobby ({driver_error_count}/{MAX_DRIVER_ERRORS})")
                 if driver_error_count >= MAX_DRIVER_ERRORS:
-                    print("[BOT] 🛑 Too many driver errors. Aborting.")
                     break
                 continue
 
             driver_error_count = 0
 
             if "meet.google.com" not in url:
-                print("[BOT] 🛑 Redirected away from Meet. Aborting.")
+                print("[BOT] 🛑 Redirected away from Meet.")
                 break
 
             if _is_admitted(driver):
@@ -335,12 +437,16 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
                 break
 
         if not admitted:
+            # ── DUMP DOM so we can see what the bot actually sees ──────────
+            print("[BOT] ❌ Not admitted — dumping DOM for diagnosis...")
+            _dump_dom_debug(driver, "admission_failed")
             _save_screenshot(driver, "04_admission_failed")
-            print("[BOT] ❌ Not admitted within timeout.")
             _stop_ffmpeg(ffmpeg_proc, temp_audio, final_audio)
             ffmpeg_proc = None
             return None
 
+        # ── DUMP DOM right after admission so we learn real labels ─────────
+        _dump_dom_debug(driver, "just_admitted")
         _save_screenshot(driver, "04_admitted_to_meeting")
         print("[BOT] 🎉 Inside the meeting! Monitoring for end...")
 
@@ -353,7 +459,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
             time.sleep(MONITOR_INTERVAL)
 
             if time.time() - start_time >= MAX_MEETING_DURATION:
-                print(f"[BOT] 🛑 Hard timeout reached. Exiting.")
+                print(f"[BOT] 🛑 Hard timeout. Exiting.")
                 break
 
             ended, reason = _is_meeting_ended(driver)
@@ -361,11 +467,9 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
             if ended:
                 url = _get_current_url(driver)
                 if url is None:
-                    # Driver crash — count separately
                     driver_error_count += 1
-                    print(f"[BOT] ⚠️  Driver unreachable ({driver_error_count}/{MAX_DRIVER_ERRORS}): {reason}")
+                    print(f"[BOT] ⚠️  Driver unreachable ({driver_error_count}/{MAX_DRIVER_ERRORS})")
                     if driver_error_count >= MAX_DRIVER_ERRORS:
-                        print("[BOT] 🛑 Driver crashed. Stopping.")
                         break
                     continue
 
@@ -383,7 +487,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
 
         # ── STEP 8: Stop recording ─────────────────────────────────────────
         success     = _stop_ffmpeg(ffmpeg_proc, temp_audio, final_audio)
-        ffmpeg_proc = None  # Prevent finally from double-stopping
+        ffmpeg_proc = None
 
         if success:
             print(f"[BOT] ✅ Ready for transcription: {final_audio}")
