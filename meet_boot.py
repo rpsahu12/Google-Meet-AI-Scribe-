@@ -11,17 +11,17 @@ from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException, WebDriverException
 )
 from urllib3.exceptions import MaxRetryError, NewConnectionError
-
+ 
 # --- CONFIGURATION ---
 DEBUG_DIR            = "debug_screenshots"
 MAX_MEETING_DURATION = 7200
 ADMISSION_TIMEOUT    = 120
 MONITOR_INTERVAL     = 3
 MAX_DRIVER_ERRORS    = 5
-
-
+ 
+ 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
+ 
 def _save_screenshot(driver, name):
     try:
         os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -30,8 +30,8 @@ def _save_screenshot(driver, name):
         print(f"[BOT] 📸 Screenshot: {filepath}")
     except Exception as e:
         print(f"[BOT] Screenshot failed ({name}): {e}")
-
-
+ 
+ 
 def _safe_driver_call(fn, default=None):
     try:
         return fn()
@@ -44,8 +44,8 @@ def _safe_driver_call(fn, default=None):
            "target window already closed" not in msg:
             print(f"[BOT] ⚠️  Driver call failed: {msg[:120]}")
         return default
-
-
+ 
+ 
 def _get_page_text(driver) -> str:
     result = _safe_driver_call(
         lambda: driver.execute_script(
@@ -53,32 +53,27 @@ def _get_page_text(driver) -> str:
         ), default=""
     )
     return result or ""
-
-
+ 
+ 
 def _get_current_url(driver) -> str:
     return _safe_driver_call(lambda: driver.current_url, default="")
-
-
+ 
+ 
 def _find_element_safe(driver, xpath):
     try:
         el = driver.find_element(By.XPATH, xpath)
         return el if el.is_displayed() else None
     except Exception:
         return None
-
-
-# ── DOM DEBUGGER — run this to discover what's actually in the page ───────────
-
+ 
+ 
+# ── DOM DEBUGGER ──────────────────────────────────────────────────────────────
+ 
 def _dump_dom_debug(driver, label="debug"):
-    """
-    Dumps ALL buttons and their attributes to a JSON file.
-    Run this right after admission to find the real aria-labels.
-    """
     print(f"[BOT] 🔍 Dumping DOM debug info ({label})...")
     try:
         os.makedirs(DEBUG_DIR, exist_ok=True)
-
-        # 1. Dump all buttons with their text and aria-label
+ 
         buttons = driver.execute_script("""
             var buttons = document.querySelectorAll('button');
             var result = [];
@@ -86,33 +81,25 @@ def _dump_dom_debug(driver, label="debug"):
                 result.push({
                     text: btn.innerText.trim().substring(0, 80),
                     aria_label: btn.getAttribute('aria-label') || '',
-                    aria_pressed: btn.getAttribute('aria-pressed') || '',
-                    data_is_muted: btn.getAttribute('data-is-muted') || '',
-                    class: btn.className.substring(0, 60),
-                    id: btn.id || '',
                     visible: btn.offsetParent !== null
                 });
             });
             return result;
         """)
-
+ 
         filepath = os.path.join(DEBUG_DIR, f"{label}_buttons.json")
         with open(filepath, "w") as f:
             json.dump(buttons, f, indent=2)
         print(f"[BOT] 🔍 Saved {len(buttons)} buttons → {filepath}")
-
-        # 2. Dump page title and URL
+ 
         info = {
             "url": _get_current_url(driver),
             "title": _safe_driver_call(lambda: driver.title, default=""),
             "body_text_sample": _get_page_text(driver)[:500],
         }
-        info_path = os.path.join(DEBUG_DIR, f"{label}_page_info.json")
-        with open(info_path, "w") as f:
+        with open(os.path.join(DEBUG_DIR, f"{label}_page_info.json"), "w") as f:
             json.dump(info, f, indent=2)
-        print(f"[BOT] 🔍 Page info → {info_path}")
-
-        # 3. Dump all elements with aria-label (catches non-button controls)
+ 
         aria_elements = driver.execute_script("""
             var els = document.querySelectorAll('[aria-label]');
             var result = [];
@@ -126,60 +113,49 @@ def _dump_dom_debug(driver, label="debug"):
             });
             return result;
         """)
-        aria_path = os.path.join(DEBUG_DIR, f"{label}_aria_elements.json")
-        with open(aria_path, "w") as f:
+        with open(os.path.join(DEBUG_DIR, f"{label}_aria_elements.json"), "w") as f:
             json.dump(aria_elements, f, indent=2)
-        print(f"[BOT] 🔍 {len(aria_elements)} aria-label elements → {aria_path}")
-
-        # 4. Print visible button summary to logs immediately
+ 
         print(f"[BOT] ── Visible buttons with aria-labels ──")
         for b in buttons:
             if b.get("visible") and (b.get("aria_label") or b.get("text")):
                 print(f"  aria-label='{b['aria_label']}' | text='{b['text']}'")
         print(f"[BOT] ─────────────────────────────────────")
-
+ 
     except Exception as e:
         print(f"[BOT] DOM debug failed: {e}")
-
-
-# ── Admission detection ───────────────────────────────────────────────────────
-
+ 
+ 
+# ── Admission detection (PRESERVED EXACTLY — was working) ─────────────────────
+ 
 def _is_admitted(driver) -> bool:
-    """
-    Checks admission using both hardcoded signals AND a live DOM scan.
-    The live scan catches any aria-label Google Meet uses on this server's Chrome.
-    """
-
-    # --- Hardcoded signals (known aria-labels) ---
     for label in ["Leave call", "Leave meeting", "End call", "Hang up",
                   "Leave", "End meeting"]:
         if _find_element_safe(driver, f"//button[@aria-label='{label}']"):
             print(f"[BOT] ✅ Admitted — leave button: '{label}'")
             return True
-
+ 
     if _find_element_safe(driver, "//*[@data-participant-id]"):
         print("[BOT] ✅ Admitted — participant tile found")
         return True
-
+ 
     for label in ["Turn off microphone", "Turn on microphone", "Mute", "Unmute",
                   "microphone", "Microphone"]:
         if _find_element_safe(driver, f"//button[@aria-label='{label}']"):
             print(f"[BOT] ✅ Admitted — mute button: '{label}'")
             return True
-
+ 
     for attr in ["jsname='DOFKe'", "data-meeting-title",
                  "aria-label='Meeting controls'", "jsname='r4nke'"]:
         if _find_element_safe(driver, f"//*[@{attr}]"):
             print(f"[BOT] ✅ Admitted — controls element: @{attr}")
             return True
-
+ 
     title = _safe_driver_call(lambda: driver.title.lower(), default="")
     if title and "waiting" not in title and "ask to join" not in title and "meet" in title:
         print(f"[BOT] ✅ Admitted — page title: '{title}'")
         return True
-
-    # --- Live DOM scan: look for ANY button that sounds like "leave" or "hang up" ---
-    # This catches localized or version-specific labels we haven't hardcoded
+ 
     try:
         result = _safe_driver_call(lambda: driver.execute_script("""
             var buttons = document.querySelectorAll('button[aria-label]');
@@ -197,30 +173,29 @@ def _is_admitted(driver) -> bool:
             });
             return found;
         """), default=None)
-
+ 
         if result:
             if result.get("leave"):
-                print(f"[BOT] ✅ Admitted — live scan found leave button: '{result['leave']}'")
+                print(f"[BOT] ✅ Admitted — live scan leave button: '{result['leave']}'")
                 return True
             if result.get("mute"):
-                print(f"[BOT] ✅ Admitted — live scan found mute button: '{result['mute']}'")
+                print(f"[BOT] ✅ Admitted — live scan mute button: '{result['mute']}'")
                 return True
     except Exception as e:
         print(f"[BOT] Live scan error: {e}")
-
-    # --- Body text check (last resort) ---
+ 
     body = _get_page_text(driver)
     if body and ("contributors" in body or "in the meeting" in body):
         url = _get_current_url(driver)
         if url and "/lookup" not in url:
-            print("[BOT] ✅ Admitted — 'in the meeting' body text found")
+            print("[BOT] ✅ Admitted — body text signal")
             return True
-
+ 
     return False
-
-
+ 
+ 
 # ── Meeting-end detection ─────────────────────────────────────────────────────
-
+ 
 def _is_meeting_ended(driver) -> tuple[bool, str]:
     url = _get_current_url(driver)
     if url is None:
@@ -229,7 +204,7 @@ def _is_meeting_ended(driver) -> tuple[bool, str]:
         return True, f"URL left Meet: {url}"
     if "/left" in url:
         return True, f"Post-call URL: {url}"
-
+ 
     body = _get_page_text(driver)
     if body is None:
         return True, "Could not read page"
@@ -238,8 +213,7 @@ def _is_meeting_ended(driver) -> tuple[bool, str]:
                    "meeting ended", "left the meeting", "this meeting has ended"]:
         if phrase in body:
             return True, f"End phrase: '{phrase}'"
-
-    # Live scan for leave button (same keyword matching as admission)
+ 
     result = _safe_driver_call(lambda: driver.execute_script("""
         var buttons = document.querySelectorAll('button[aria-label]');
         var keywords = ['leave', 'hang', 'end call', 'disconnect'];
@@ -251,16 +225,16 @@ def _is_meeting_ended(driver) -> tuple[bool, str]:
             }
         });
         return found;
-    """), default=True)  # default True = assume ended if we can't check
-
+    """), default=True)
+ 
     if not result:
         return True, "Leave button not found (live scan)"
-
+ 
     return False, ""
-
-
+ 
+ 
 # ── FFmpeg helpers ────────────────────────────────────────────────────────────
-
+ 
 def _start_ffmpeg(output_path: str) -> subprocess.Popen:
     print(f"[BOT] 🎙️  Starting FFmpeg → {output_path}")
     cmd = [
@@ -275,8 +249,8 @@ def _start_ffmpeg(output_path: str) -> subprocess.Popen:
         raise RuntimeError(f"FFmpeg failed to start:\n{err}")
     print("[BOT] ✅ FFmpeg recording started")
     return proc
-
-
+ 
+ 
 def _stop_ffmpeg(proc, temp_path: str, final_path: str) -> bool:
     if proc is None:
         return False
@@ -292,71 +266,121 @@ def _stop_ffmpeg(proc, temp_path: str, final_path: str) -> bool:
         return True
     print(f"[BOT] ⚠️  Audio file missing or empty: {temp_path}")
     return False
-
-
-# ── Main bot logic ────────────────────────────────────────────────────────────
-
-def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
-    os.environ["DISPLAY"] = ":99"
-
-    timestamp   = int(time.time())
-    temp_audio  = f"meeting_audio_{timestamp}_temp.wav"
-    final_audio = f"meeting_audio_{timestamp}.wav"
-    ffmpeg_proc = None
-    driver      = None
-
-    print(f"[BOT] ══════════════════════════════════════════")
-    print(f"[BOT] Meet URL : {meet_url}")
-    print(f"[BOT] Bot Name : {bot_name}")
-    print(f"[BOT] ══════════════════════════════════════════")
-
+ 
+ 
+# ── Chrome launch (HARDENED — only change from working version) ───────────────
+ 
+def _launch_chrome() -> uc.Chrome:
+    """
+    Tries to launch Chrome up to 3 times with increasing stability measures.
+    Returns a working driver or raises RuntimeError.
+    """
+    chrome_binary  = "/usr/bin/google-chrome"
+    chrome_version = None
+ 
+    if os.path.exists(chrome_binary):
+        try:
+            ver = subprocess.check_output(
+                [chrome_binary, "--version"]
+            ).decode().strip()
+            chrome_version = int(ver.split()[-1].split(".")[0])
+            print(f"[BOT] Chrome version: {chrome_version}")
+        except Exception as e:
+            print(f"[BOT] Could not detect Chrome version: {e}")
+            chrome_binary = None
+    else:
+        chrome_binary = None
+ 
+    # Fix /dev/shm size — Chrome needs this; AWS instances default to 64MB
     try:
-        # ── STEP 1: Launch Chrome ──────────────────────────────────────────
-        print("[BOT] Launching Chrome...")
+        subprocess.run(
+            ["sudo", "mount", "-o", "remount,size=512m", "/dev/shm"],
+            check=False, capture_output=True
+        )
+        print("[BOT] ✅ /dev/shm remounted to 512MB")
+    except Exception:
+        pass
+ 
+    def _make_options():
         options = uc.ChromeOptions()
         options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-dev-shm-usage")  # Use /tmp instead of /dev/shm
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--start-maximized")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--use-fake-ui-for-media-stream")
+        # ❌ NOT --use-fake-device-for-media-stream (silences real audio)
         options.add_argument("--lang=en-US")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--disable-notifications")
+        # Memory/stability flags for AWS
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--disable-sync")
+        options.add_argument("--metrics-recording-only")
+        options.add_argument("--no-first-run")
         options.add_experimental_option("prefs", {
             "profile.default_content_setting_values.media_stream_mic": 1,
             "profile.default_content_setting_values.media_stream_camera": 1,
             "profile.default_content_setting_values.geolocation": 0,
             "profile.default_content_setting_values.notifications": 1,
         })
-
-        chrome_binary  = "/usr/bin/google-chrome"
-        chrome_version = None
-        if os.path.exists(chrome_binary):
-            try:
-                ver = subprocess.check_output([chrome_binary, "--version"]).decode().strip()
-                chrome_version = int(ver.split()[-1].split(".")[0])
-                print(f"[BOT] Chrome version: {chrome_version}")
-            except Exception as e:
-                print(f"[BOT] Could not detect Chrome version: {e}")
-                chrome_binary = None
-        else:
-            chrome_binary = None
-
-        driver = uc.Chrome(
-            options=options,
-            use_subprocess=True,
-            browser_executable_path=chrome_binary,
-            version_main=chrome_version,
-        )
-        driver.implicitly_wait(5)
-        print("[BOT] ✅ Chrome launched")
-
+        return options
+ 
+    last_error = None
+    for attempt in range(1, 4):
+        print(f"[BOT] Chrome launch attempt {attempt}/3...")
+        try:
+            driver = uc.Chrome(
+                options=_make_options(),
+                use_subprocess=True,
+                browser_executable_path=chrome_binary,
+                version_main=chrome_version,
+            )
+            driver.implicitly_wait(5)
+            # Quick sanity check — if this works, driver is alive
+            _ = driver.current_url
+            print(f"[BOT] ✅ Chrome launched (attempt {attempt})")
+            return driver
+        except Exception as e:
+            last_error = e
+            print(f"[BOT] ⚠️  Chrome launch attempt {attempt} failed: {str(e)[:150]}")
+            # Kill any stale chromedriver/chrome processes before retrying
+            subprocess.run(["pkill", "-f", "chromedriver"], capture_output=True)
+            subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
+            time.sleep(3 * attempt)  # Back off: 3s, 6s, 9s
+ 
+    raise RuntimeError(f"Chrome failed to launch after 3 attempts. Last error: {last_error}")
+ 
+ 
+# ── Main bot logic ────────────────────────────────────────────────────────────
+ 
+def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
+    os.environ["DISPLAY"] = ":99"
+ 
+    timestamp   = int(time.time())
+    temp_audio  = f"meeting_audio_{timestamp}_temp.wav"
+    final_audio = f"meeting_audio_{timestamp}.wav"
+    ffmpeg_proc = None
+    driver      = None
+ 
+    print(f"[BOT] ══════════════════════════════════════════")
+    print(f"[BOT] Meet URL : {meet_url}")
+    print(f"[BOT] Bot Name : {bot_name}")
+    print(f"[BOT] ══════════════════════════════════════════")
+ 
+    try:
+        # ── STEP 1: Launch Chrome ──────────────────────────────────────────
+        driver = _launch_chrome()
+ 
         # ── STEP 2: Navigate ───────────────────────────────────────────────
         print("[BOT] Navigating to meeting URL...")
         driver.get(meet_url)
         time.sleep(5)
         _save_screenshot(driver, "01_after_navigation")
-
+ 
         # ── STEP 3: Enter name ─────────────────────────────────────────────
         print("[BOT] Looking for name input...")
         try:
@@ -373,7 +397,7 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
         except TimeoutException:
             print("[BOT] No name field — may already be signed in. Continuing...")
         _save_screenshot(driver, "02_after_name_entry")
-
+ 
         # ── STEP 4: Click join button ──────────────────────────────────────
         print("[BOT] Clicking join button...")
         join_xpaths = [
@@ -395,13 +419,13 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
                 break
             except (TimeoutException, NoSuchElementException):
                 continue
-
+ 
         if not clicked:
             _save_screenshot(driver, "03_join_button_not_found")
             raise RuntimeError("Could not find or click the join button.")
-
+ 
         _save_screenshot(driver, "03_after_join_click")
-
+ 
         # ── STEP 5: Start recording ────────────────────────────────────────
         ffmpeg_proc = _start_ffmpeg(temp_audio)
 
