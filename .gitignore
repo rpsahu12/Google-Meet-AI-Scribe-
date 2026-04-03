@@ -15,3 +15,30 @@ __pycache__/
 
 # OS / misc
 .DS_Store
+
+cat >> ~/Google-Meet-AI-Scribe-/.gitignore << 'EOF'
+
+# Debug screenshots from bot
+debug_screenshots/
+
+# ChromeDriver cache
+.local/
+
+# Logs
+*.log
+logs/
+
+# Swap file
+*.swp
+
+# Temp files
+*_temp.wav
+
+# Node modules (if frontend is in same repo)
+node_modules/
+dist/
+build/
+
+# Scribe key
+*.pem
+EOF

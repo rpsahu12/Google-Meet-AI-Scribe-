@@ -1,12 +1,10 @@
 fastapi
 uvicorn
 pydantic
-playwright
 google-generativeai
 python-dotenv
 firebase-admin
 boto3
-playwright-stealth
 undetected-chromedriver
 selenium
 setuptools
