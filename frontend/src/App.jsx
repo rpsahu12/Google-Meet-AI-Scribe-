@@ -70,15 +70,15 @@ function App() {
   // Timer for elapsed time
   useEffect(() => {
     let interval;
-    if (status === 'listening' || status === 'processing') {
+    if (status === 'in-meeting' || status === 'processing') {
       interval = setInterval(() => setElapsedTime(t => t + 1), 1000);
     }
     return () => clearInterval(interval);
   }, [status]);
 
-  // Simulate live transcription
+  // Simulate live transcription (shown during meeting)
   useEffect(() => {
-    if (status !== 'listening') return;
+    if (status !== 'in-meeting') return;
 
     let snippetIndex = 0;
     const interval = setInterval(() => {
@@ -121,7 +121,7 @@ function App() {
     setError(null);
     setTranscription([]);
     setElapsedTime(0);
-    setStatus('joining');
+    setStatus('asking');
 
     try {
       // Get the Firebase ID token from the logged-in user
@@ -159,10 +159,12 @@ function App() {
           const { status: jobStatus, result, error } = jobData;
 
           // Map backend status to frontend status
-          if (jobStatus === 'pending' || jobStatus === 'recording') {
-            setStatus('joining');
+          if (jobStatus === 'pending') {
+            setStatus('asking'); // Bot asking to join
+          } else if (jobStatus === 'recording') {
+            setStatus('in-meeting'); // Bot admitted, meeting in progress
           } else if (jobStatus === 'processing') {
-            setStatus('processing');
+            setStatus('processing'); // Recording done, generating summary
           } else if (jobStatus === 'completed') {
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 
@@ -242,7 +244,7 @@ function App() {
   };
 
   const getStatusProgress = () => {
-    const stages = ['joining', 'listening', 'processing', 'complete'];
+    const stages = ['asking', 'in-meeting', 'processing', 'complete'];
     const currentIndex = stages.indexOf(status);
     return ((currentIndex + 1) / stages.length) * 100;
   };
@@ -339,7 +341,7 @@ function App() {
         </section>
 
         {/* Progress Bar */}
-        {(status !== 'idle' && status !== 'complete') && (
+        {(status === 'asking' || status === 'in-meeting' || status === 'processing') && (
           <div className="progress-container">
             <div className="progress-bar" style={{ width: `${getStatusProgress()}%` }} />
           </div>
@@ -352,9 +354,9 @@ function App() {
               <div className="status-indicator">
                 <div className={`status-dot ${status}`} />
                 <span className="status-text">
-                  {status === 'joining' && 'Joining meeting...'}
-                  {status === 'listening' && 'Transcribing live...'}
-                  {status === 'processing' && 'Generating summary...'}
+                  {status === 'asking' && 'Asking to join...'}
+                  {status === 'in-meeting' && 'Meeting in progress...'}
+                  {status === 'processing' && 'Recording finished - Generating summary...'}
                   {status === 'complete' && 'Meeting complete!'}
                 </span>
               </div>
@@ -375,7 +377,7 @@ function App() {
         )}
 
         {/* Live Transcription */}
-        {status === 'listening' && (
+        {status === 'in-meeting' && (
           <section className="transcription-section">
             <div className="section-header">
               <Mic size={20} className="section-icon" />

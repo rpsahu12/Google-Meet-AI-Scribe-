@@ -228,12 +228,12 @@
   background: var(--text-secondary);
 }
 
-.status-dot.joining {
+.status-dot.asking {
   background: var(--warning);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
-.status-dot.listening {
+.status-dot.in-meeting {
   background: var(--success);
   animation: pulse 1s ease-in-out infinite;
 }
