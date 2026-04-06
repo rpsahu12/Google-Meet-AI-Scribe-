@@ -272,7 +272,7 @@ function App() {
     return (
       <div className="app-container">
         <a
-          href="https://github.com/rpsahu12/Google-Meet-AI-Scribe"
+          href="https://github.com/rpsahu12/Google-Meet-AI-Scribe-"
           target="_blank"
           rel="noopener noreferrer"
           className="github-link-fixed"
@@ -311,7 +311,7 @@ function App() {
           <h1>Google Meet AI Scribe</h1>
         </div>
         <a
-          href="https://github.com/rpsahu12/Google-Meet-AI-Scribe"
+          href="https://github.com/rpsahu12/Google-Meet-AI-Scribe-"
           target="_blank"
           rel="noopener noreferrer"
           className="github-link"
