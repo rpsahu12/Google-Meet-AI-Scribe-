@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Video, Play, Loader2, FileText, CheckCircle, Copy, Download,
-  Clock, Users, Mic, Sparkles, RotateCcw, AlertCircle, LogOut, Radio
+  Clock, Users, Mic, Sparkles, RotateCcw, AlertCircle, LogOut, Radio,
+  Moon, Sun
 } from 'lucide-react';
 
 const GithubIcon = ({ size = 24 }) => (
@@ -25,8 +26,8 @@ function App() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [copied, setCopied] = useState(false);
   const [meetings, setMeetings] = useState([]);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('darkMode') === 'true');
   const pollIntervalRef = useRef(null);
-  const askingStartTimeRef = useRef(null); // tracks when 'asking' state began
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -39,6 +40,14 @@ function App() {
     const saved = localStorage.getItem('meetings');
     if (saved) setMeetings(JSON.parse(saved));
   }, []);
+
+  // Apply dark class to <html> and persist
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+    localStorage.setItem('darkMode', darkMode);
+  }, [darkMode]);
+
+  const toggleDarkMode = () => setDarkMode(prev => !prev);
 
   const handleSignIn = async () => {
     try {
@@ -82,7 +91,6 @@ function App() {
     setElapsedTime(0);
     setSummary(null);
     setStatus('asking');
-    askingStartTimeRef.current = Date.now(); // start the 30s asking timer
 
     try {
       const idToken = await getIdToken(user);
@@ -114,14 +122,7 @@ function App() {
           if (jobStatus === 'pending') {
             setStatus('asking');
           } else if (jobStatus === 'recording') {
-            // ── 30s minimum on 'asking' screen ──────────────────────────────
-            // The host needs time to admit the bot. Don't jump to 'in-meeting'
-            // until at least 30 seconds have passed since the bot was deployed.
-            const elapsed = Date.now() - (askingStartTimeRef.current || Date.now());
-            if (elapsed >= 30000) {
-              setStatus('in-meeting');
-            }
-            // If < 30s, stay on 'asking' — next poll will check again
+            setStatus('in-meeting');
           } else if (jobStatus === 'processing') {
             setStatus('processing');
           } else if (jobStatus === 'completed') {
@@ -210,10 +211,15 @@ function App() {
   if (!user) {
     return (
       <div className="app-container">
-        <a href="https://github.com/rpsahu12/Google-Meet-AI-Scribe-" target="_blank"
-          rel="noopener noreferrer" className="github-link-fixed" title="View source on GitHub">
-          <GithubIcon size={28} />
-        </a>
+        <div className="login-topbar">
+          <button onClick={toggleDarkMode} className="icon-btn" title={darkMode ? 'Light mode' : 'Dark mode'}>
+            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+          </button>
+          <a href="https://github.com/rpsahu12/Google-Meet-AI-Scribe-" target="_blank"
+            rel="noopener noreferrer" className="icon-btn" title="View source on GitHub">
+            <GithubIcon size={20} />
+          </a>
+        </div>
         <div className="login-container">
           <div className="login-card">
             <div className="login-logo">
@@ -236,23 +242,32 @@ function App() {
   return (
     <div className="app-container">
       <header className="header">
-        <a href="https://github.com/rpsahu12/Google-Meet-AI-Scribe-" target="_blank"
-          rel="noopener noreferrer" className="github-link" title="View source on GitHub">
-          <GithubIcon size={24} />
-        </a>
+        {/* ── Top bar: dark toggle (left) | user+signout (right) ── */}
+        <div className="header-topbar">
+          <button onClick={toggleDarkMode} className="icon-btn" title={darkMode ? 'Light mode' : 'Dark mode'}>
+            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+          </button>
+          <div className="header-user">
+            <div className="user-info">
+              <img src={user.photoURL} alt={user.displayName} className="user-avatar" />
+              <span className="user-name">{user.displayName}</span>
+            </div>
+            <button onClick={handleSignOut} className="signout-btn" title="Sign out">
+              <LogOut size={18} />
+            </button>
+          </div>
+        </div>
+
+        {/* ── Centred logo + title ── */}
         <div className="logo-section">
           <div className="logo-icon"><Sparkles size={32} /></div>
           <h1>Google Meet AI Scribe</h1>
+          <a href="https://github.com/rpsahu12/Google-Meet-AI-Scribe-" target="_blank"
+            rel="noopener noreferrer" className="icon-btn" title="View source on GitHub">
+            <GithubIcon size={20} />
+          </a>
         </div>
-        <div className="header-user">
-          <div className="user-info">
-            <img src={user.photoURL} alt={user.displayName} className="user-avatar" />
-            <span className="user-name">{user.displayName}</span>
-          </div>
-          <button onClick={handleSignOut} className="signout-btn" title="Sign out">
-            <LogOut size={18} />
-          </button>
-        </div>
+
         <p className="subtitle">AI-powered meeting transcription and summarization</p>
       </header>
 

@@ -39,47 +39,49 @@
   position: relative;
 }
 
-.github-link {
-  position: absolute;
-  top: 16px;
-  right: 16px;
+/* ===== Unified icon button (GitHub + dark toggle) ===== */
+.icon-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 10px;
-  color: var(--text);
-  transition: all 0.2s;
-  border-radius: var(--radius-sm);
+  width: 38px;
+  height: 38px;
+  padding: 0;
   background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.2s;
+  flex-shrink: 0;
 }
 
-.github-link:hover {
-  color: var(--primary);
+.icon-btn:hover {
   background: var(--primary-light);
-  transform: scale(1.05);
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: scale(1.08);
 }
 
-.github-link-fixed {
+/* ===== Header top bar ===== */
+.header-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+/* ===== Login top bar ===== */
+.login-topbar {
   position: fixed;
   top: 20px;
-  right: 20px;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 12px;
-  color: var(--text);
-  transition: all 0.2s;
-  border-radius: 50%;
-  background: var(--bg);
-  box-shadow: var(--shadow);
+  gap: 10px;
   z-index: 100;
-}
-
-.github-link-fixed:hover {
-  color: var(--primary);
-  background: var(--primary-light);
-  transform: scale(1.1);
-  box-shadow: var(--shadow-lg);
 }
 
 .logo-section {
@@ -88,6 +90,7 @@
   justify-content: center;
   gap: 12px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .logo-icon {
@@ -819,13 +822,104 @@
     width: 100%;
   }
 
-  .github-link {
-    position: static;
-    margin: 0 auto 16px;
-    justify-content: center;
-  }
-
   .header {
-    padding-top: 60px;
+    padding-top: 0;
   }
 }
+/* ===== Dark Mode Variables ===== */
+html.dark {
+  --primary: #8ab4f8;
+  --primary-dark: #aecbfa;
+  --primary-light: #1e3a5f;
+  --success: #81c995;
+  --success-bg: #1a3a2a;
+  --warning: #fdd663;
+  --warning-bg: #3a2f00;
+  --error: #f28b82;
+  --error-bg: #3c1f1e;
+  --text: #e8eaed;
+  --text-secondary: #9aa0a6;
+  --bg: #1e1e2e;
+  --bg-secondary: #2a2a3e;
+  --border: #3c3c54;
+  --shadow: 0 2px 8px rgba(0,0,0,0.4);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.5);
+}
+
+html.dark body {
+  background: #1e1e2e;
+  color: #e8eaed;
+}
+
+html.dark .app-container {
+  background: #1e1e2e;
+}
+
+html.dark .login-container {
+  background: linear-gradient(135deg, #1e1e2e, #1e3a5f);
+}
+
+html.dark .login-card {
+  background: #2a2a3e;
+  border: 1px solid #3c3c54;
+}
+
+html.dark .input-wrapper {
+  background: #2a2a3e;
+  border-color: #3c3c54;
+}
+
+html.dark .input-wrapper:focus-within {
+  border-color: #8ab4f8;
+  box-shadow: 0 0 0 3px rgba(138,180,248,0.15);
+}
+
+html.dark .meet-input {
+  color: #e8eaed;
+}
+
+html.dark .meet-input::placeholder { color: #5f6368; }
+html.dark .meet-input:disabled { background: #252535; }
+html.dark .deploy-btn.disabled { background: #3c3c54; color: #5f6368; }
+
+html.dark .summary-card {
+  background: #2a2a3e;
+  border-color: #3c3c54;
+}
+
+html.dark .action-item { background: #1e1e2e; }
+html.dark .action-item.priority-high { background: #3c1f1e; border-left-color: #f28b82; }
+html.dark .action-item.priority-medium { background: #3a2f00; border-left-color: #fdd663; }
+
+html.dark .transcription-content {
+  background: #2a2a3e;
+  border-color: #3c3c54;
+}
+
+html.dark .history-item { background: #2a2a3e; border-color: #3c3c54; }
+html.dark .history-item:hover { background: #1e3a5f; border-color: #8ab4f8; }
+
+html.dark .timer { background: #2a2a3e; }
+html.dark .reset-btn { background: #2a2a3e; border-color: #3c3c54; color: #e8eaed; }
+html.dark .reset-btn:hover { background: #1e3a5f; border-color: #8ab4f8; }
+
+html.dark .action-btn { background: #2a2a3e; border-color: #3c3c54; color: #9aa0a6; }
+html.dark .action-btn:hover { border-color: #8ab4f8; color: #8ab4f8; background: #1e3a5f; }
+
+html.dark .user-info { background: #2a2a3e; }
+html.dark .signout-btn { background: #2a2a3e; border-color: #3c3c54; color: #9aa0a6; }
+html.dark .signout-btn:hover { border-color: #f28b82; color: #f28b82; background: #3c1f1e; }
+
+html.dark .icon-btn { background: #2a2a3e; border-color: #3c3c54; color: #9aa0a6; }
+html.dark .icon-btn:hover { background: #1e3a5f; border-color: #8ab4f8; color: #8ab4f8; }
+
+html.dark .progress-container { background: #2a2a3e; }
+
+html.dark .signin-btn { background: #2a2a3e; border-color: #3c3c54; color: #e8eaed; }
+html.dark .signin-btn:hover { border-color: #8ab4f8; }
+
+html.dark .error-banner { background: #3c1f1e; border-color: #f28b82; color: #f28b82; }
+html.dark .error-close { color: #f28b82; }
+html.dark .history-section { border-top-color: #3c3c54; }
+html.dark .transcript-line { border-bottom-color: #3c3c54; }
+html.dark .header-topbar { border-bottom-color: #3c3c54; }
