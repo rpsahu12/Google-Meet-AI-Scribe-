@@ -63,7 +63,7 @@ Return ONLY a valid JSON object with this exact structure:
 FIELD-BY-FIELD RULES:
 
 [executive]
-- Write 3–4 sentences maximum. No filler, no repetition.
+- write full detail summary about the whole meeting.no filter and no repeatation.
 - Sentence 1: What was the PRIMARY topic or goal of the meeting?
 - Sentence 2: What KEY decisions or conclusions were reached?
 - Sentence 3: What blockers, risks, or unresolved issues were raised?
