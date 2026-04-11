@@ -923,3 +923,28 @@ html.dark .error-close { color: #f28b82; }
 html.dark .history-section { border-top-color: #3c3c54; }
 html.dark .transcript-line { border-bottom-color: #3c3c54; }
 html.dark .header-topbar { border-bottom-color: #3c3c54; }
+/* ===== Stop Bot Button ===== */
+.stop-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--error-bg);
+  border: 1px solid var(--error);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--error);
+}
+
+.stop-btn:hover:not(:disabled) {
+  background: var(--error);
+  color: white;
+}
+
+.stop-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

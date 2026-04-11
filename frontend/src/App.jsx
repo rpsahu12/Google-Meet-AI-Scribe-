@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Video, Play, Loader2, FileText, CheckCircle, Copy, Download,
   Clock, Users, Mic, Sparkles, RotateCcw, AlertCircle, LogOut, Radio,
-  Moon, Sun
+  Moon, Sun, StopCircle
 } from 'lucide-react';
 
 const GithubIcon = ({ size = 24 }) => (
@@ -27,7 +27,9 @@ function App() {
   const [copied, setCopied] = useState(false);
   const [meetings, setMeetings] = useState([]);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('darkMode') === 'true');
+  const [stopping, setStopping] = useState(false);
   const pollIntervalRef = useRef(null);
+  const currentJobIdRef = useRef(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -90,6 +92,7 @@ function App() {
     setError(null);
     setElapsedTime(0);
     setSummary(null);
+    setStopping(false);
     setStatus('asking');
 
     try {
@@ -110,6 +113,7 @@ function App() {
       }
 
       const { job_id: jobId } = await initResponse.json();
+      currentJobIdRef.current = jobId;
       console.log('Job initiated:', jobId);
 
       pollIntervalRef.current = setInterval(async () => {
@@ -125,6 +129,7 @@ function App() {
             setStatus('in-meeting');
           } else if (jobStatus === 'processing') {
             setStatus('processing');
+            setStopping(false);
           } else if (jobStatus === 'completed') {
             clearInterval(pollIntervalRef.current);
 
@@ -194,6 +199,32 @@ function App() {
     setSummary(null);
     setElapsedTime(0);
     setError(null);
+    setStopping(false);
+    currentJobIdRef.current = null;
+  };
+
+  const handleStopBot = async () => {
+    const jobId = currentJobIdRef.current;
+    if (!jobId || stopping) return;
+    const confirmed = window.confirm(
+      "Stop the bot? It will leave the meeting and generate a summary of what was recorded so far."
+    );
+    if (!confirmed) return;
+    setStopping(true);
+    try {
+      const idToken = await getIdToken(user);
+      const response = await fetch(`https://aiscribe.mooo.com/stop-bot/${jobId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${idToken}` }
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.detail || 'Failed to stop bot');
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to stop the bot');
+      setStopping(false);
+    }
   };
 
   const loadMeeting = (meeting) => {
@@ -326,22 +357,31 @@ function App() {
                 <div className={`status-dot ${status}`} />
                 <span className="status-text">
                   {status === 'asking' && 'Bot is asking to join the meeting...'}
-                  {status === 'in-meeting' && 'Bot is in the meeting, recording audio...'}
+                  {status === 'in-meeting' && (stopping ? 'Stopping bot — waiting for it to leave...' : 'Bot is in the meeting, recording audio...')}
                   {status === 'processing' && 'Recording finished — generating AI summary...'}
                   {status === 'complete' && 'Meeting complete!'}
                 </span>
               </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               {(status === 'in-meeting' || status === 'processing') && (
                 <div className="timer">
                   <Clock size={16} />
                   <span>{formatTime(elapsedTime)}</span>
                 </div>
               )}
+              {status === 'in-meeting' && (
+                <button onClick={handleStopBot} disabled={stopping} className="stop-btn">
+                  {stopping
+                    ? <><Loader2 size={16} className="spinner" /><span>Stopping...</span></>
+                    : <><StopCircle size={16} /><span>Stop Bot</span></>}
+                </button>
+              )}
               {status === 'complete' && (
                 <button onClick={handleReset} className="reset-btn">
                   <RotateCcw size={16} /><span>New Meeting</span>
                 </button>
               )}
+              </div>
             </div>
           </section>
         )}
@@ -358,7 +398,8 @@ function App() {
                 <Loader2 size={28} className="spinner" />
                 <p>The bot is inside the meeting and recording audio.</p>
                 <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-                  The AI summary will be generated automatically once the meeting ends.
+                  The AI summary will be generated automatically once the meeting ends —
+                  or click <strong>Stop Bot</strong> above to end early and get a summary now.
                 </p>
               </div>
             </div>

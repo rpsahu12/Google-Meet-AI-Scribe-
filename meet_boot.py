@@ -3,6 +3,7 @@ import subprocess
 import os
 import time
 import json
+import threading
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -306,18 +307,16 @@ def _launch_chrome() -> uc.Chrome:
     def _make_options():
         options = uc.ChromeOptions()
         options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")  # Use /tmp instead of /dev/shm
+        options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--start-maximized")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--use-fake-ui-for-media-stream")
-        # ❌ NOT --use-fake-device-for-media-stream (silences real audio)
         options.add_argument("--lang=en-US")
         options.add_argument("--disable-extensions")
         options.add_argument("--disable-infobars")
         options.add_argument("--disable-notifications")
-        # Memory/stability flags for AWS
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-default-apps")
         options.add_argument("--disable-sync")
@@ -342,24 +341,23 @@ def _launch_chrome() -> uc.Chrome:
                 version_main=chrome_version,
             )
             driver.implicitly_wait(5)
-            # Quick sanity check — if this works, driver is alive
             _ = driver.current_url
             print(f"[BOT] ✅ Chrome launched (attempt {attempt})")
             return driver
         except Exception as e:
             last_error = e
             print(f"[BOT] ⚠️  Chrome launch attempt {attempt} failed: {str(e)[:150]}")
-            # Kill any stale chromedriver/chrome processes before retrying
             subprocess.run(["pkill", "-f", "chromedriver"], capture_output=True)
             subprocess.run(["pkill", "-f", "chrome"], capture_output=True)
-            time.sleep(3 * attempt)  # Back off: 3s, 6s, 9s
+            time.sleep(3 * attempt)
 
     raise RuntimeError(f"Chrome failed to launch after 3 attempts. Last error: {last_error}")
 
 
 # ── Main bot logic ────────────────────────────────────────────────────────────
 
-def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
+def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot",
+                  stop_event: threading.Event = None) -> str | None:
     os.environ["DISPLAY"] = ":99"
 
     timestamp   = int(time.time())
@@ -474,13 +472,18 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
         _save_screenshot(driver, "04_admitted_to_meeting")
         print("[BOT] 🎉 Inside the meeting! Monitoring for end...")
 
-        # ── STEP 7: Monitor until meeting ends ────────────────────────────
+        # ── STEP 7: Monitor until meeting ends OR user stops bot ──────────
         start_time              = time.time()
         consecutive_end_signals = 0
         driver_error_count      = 0
 
         while True:
             time.sleep(MONITOR_INTERVAL)
+
+            # ── NEW: Check if user requested stop ─────────────────────────
+            if stop_event is not None and stop_event.is_set():
+                print("[BOT] 🛑 Stop requested by user — leaving meeting.")
+                break
 
             if time.time() - start_time >= MAX_MEETING_DURATION:
                 print(f"[BOT] 🛑 Hard timeout. Exiting.")
@@ -540,8 +543,9 @@ def _run_bot_sync(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
 
 # ── Async wrapper for FastAPI ─────────────────────────────────────────────────
 
-async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot") -> str | None:
-    return await asyncio.to_thread(_run_bot_sync, meet_url, bot_name)
+async def join_meet_and_record(meet_url: str, bot_name: str = "AI Scribe Bot",
+                                stop_event: threading.Event = None) -> str | None:
+    return await asyncio.to_thread(_run_bot_sync, meet_url, bot_name, stop_event)
 
 
 # ── Local test ────────────────────────────────────────────────────────────────
